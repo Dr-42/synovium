@@ -1,0 +1,30 @@
+
+# ========================
+# Go Compiler Artifacts
+# ========================
+# Ignore the compiled compiler binary (assuming you name it synovium)
+synovium
+synovium.exe
+*.out
+
+# ========================
+# Tree-sitter & Node
+# ========================
+tree-sitter-synovium/node_modules/
+
+# Ignore compiled WebAssembly artifacts
+*.wasm
+tree-sitter-synovium/**/*.wasm
+
+# Ignore Tree-sitter local test directories (if you run `tree-sitter test` later)
+tree-sitter-synovium/corpus/
+tree-sitter-synovium/test/
+
+# ========================
+# OS & Editor
+# ========================
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
