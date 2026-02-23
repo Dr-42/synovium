@@ -1,60 +1,143 @@
-// --- SYNTHEX EBNF ROOT ---
+// ============================================================================
+// SYNOVIUM EBNF (Standardized for Tree-sitter / Recursive Descent)
+// ============================================================================
 
-<Program>      ::= <Declaration>*
-<Declaration>  ::= <VariableDecl> ";"
-                 | <StructDecl>
-                 | <EnumDecl>
-                 | <ImplBlock>
-                 | <FuncDecl>
+<source_file> ::= <declaration>*
 
-<VariableDecl> ::= <Identifier> ":" <Type> <AssignOp> <Expression>
-<AssignOp>     ::= "="   /* Immutable Runtime */
-                 | "~="  /* Mutable Runtime */
-                 | ":="  /* Comptime Constant */
+// --- 1. TOP LEVEL DECLARATIONS ---
+<declaration> ::= <variable_decl> ";"
+                | <struct_decl>
+                | <enum_decl>
+                | <impl_decl>
+                | <function_decl>
 
-<StructDecl>   ::= "struct" <Identifier> "{" <FieldList>? "}"
-<FieldList>    ::= <Field> ( "," <Field> )* ","?
-<Field>        ::= <Identifier> ":" <Type>
+// --- 2. DATA STRUCTURES & IMPL ---
+<struct_decl> ::= "struct" <identifier> "{" <field_decl_list>? "}"
+<field_decl_list> ::= <field_decl> ( "," <field_decl> )* ","?
+<field_decl>  ::= <identifier> ":" <type>
 
-<EnumDecl>     ::= "enum" <Identifier> "{" <VariantList>? "}"
-<VariantList>  ::= <Variant> ( "," <Variant> )* ","?
-<Variant>      ::= <Identifier> ( "(" <Type> ")" )?
+<enum_decl>   ::= "enum" <identifier> "{" <variant_list>? "}"
+<variant_list>::= <variant> ( "," <variant> )* ","?
+<variant>     ::= <identifier> ( "(" <type_list> ")" )?
 
-<ImplBlock>    ::= "impl" <Identifier> ( "for" <TypeList> )? "{" <FuncDecl>* "}"
-<TypeList>     ::= "(" <Type> ( "," <Type> )* ")" | <Type>
+<impl_decl>   ::= "impl" <identifier> "{" <function_decl>* "}"
 
-<FuncDecl>     ::= "fnc" <Identifier> "(" <ParamList>? ")" ( <ReturnOp> <Type> )? <Scope>
-<ParamList>    ::= <Param> ( "," <Param> )* ","?
-<Param>        ::= <Identifier> ":" <Type>
-<ReturnOp>     ::= ":=" | "="
+// --- 3. FUNCTIONS & VARIABLES ---
+<function_decl> ::= "fnc" <identifier> "(" <parameter_list>? ")" ( <return_op> <type> )? <block>
+<parameter_list>::= <parameter> ( "," <parameter> )* ","?
+<parameter>     ::= <identifier> ":" <type>
+<return_op>     ::= ":=" | "="
 
-<Scope>        ::= "{" <Statement>* <Expression>? "}"
+<variable_decl> ::= <identifier> ":" <type> <assign_op> <expression>
+<assign_op>     ::= "=" | "~=" | ":="
 
-<Statement>    ::= <VariableDecl> ";" 
-                 | "ret" <Expression>? ";" 
-                 | "yld" <Expression>? ";" /* Loop slice accumulator */
-                 | "brk" ";"               /* Loop termination */
-                 | <Expression> ";" 
+// --- 4. BLOCKS & STATEMENTS ---
+// A block is an expression itself because of "bubbling"
+<block>       ::= "{" <statement>* <expression>? "}"
 
-<Expression>   ::= <IfExpr> 
-                 | <MatchExpr> 
-                 | <LoopExpr>
-                 | <RangeExpr>
-                 | <Identifier> ( "." <Identifier> )* /* Method/field access */
-                 | <Literal>
+<statement>   ::= <variable_decl> ";"
+                | "ret" <expression>? ";"
+                | "yld" <expression>? ";"
+                | "brk" ";"
+                | <expression> ";"
 
-<IfExpr>       ::= "if" <Expression> <Scope> ( "elif" <Expression> <Scope> )* ( "else" <Scope> )?
+// --- 5. TYPES ---
+<type>        ::= "*"* "&"* <base_type>
+<base_type>   ::= <identifier> ( "." <identifier> )* | "[" <type> ";" ( <expression> | ":" ) "]"
+<type_list>   ::= <type> ( "," <type> )*
 
-<MatchExpr>    ::= "match" <Expression> "{" <MatchArm>* "}"
-<MatchArm>     ::= <Pattern> "->" <Scope> ","?
-<Pattern>      ::= <Identifier> ( "." <Identifier> )* ( "(" <IdentifierList> ")" )?
-<IdentifierList>::= <Identifier> ( "," <Identifier> )*
+// --- 6. EXPRESSIONS (Strict C Precedence: Lowest to Highest) ---
+<expression>  ::= <assignment_expr>
 
-<LoopExpr>     ::= "loop" ( "(" <LoopCond> ")" )? <Scope>
-<LoopCond>     ::= <VariableDecl> | <Expression>
-<RangeExpr>    ::= <Expression> "..." <Expression>
+// Precedence 15: Assignment (Right-Associative)
+<assignment_expr> ::= <range_expr> ( ( "=" | "~=" ) <assignment_expr> )?
 
-<Type>         ::= "*"* "&"* <Identifier>
-                 | "[" <Type> ";" ( <Expression> | ":" ) "]" /* Array or Slice */
-<Identifier>   ::= [a-zA-Z_] [a-zA-Z0-9_]*
-<Literal>      ::= [0-9]+ | '"' [^"]* '"' | "'" [^'] "'" | "bln" /* true/false */
+// Precedence 14: Range Operator
+<range_expr>  ::= <logical_or_expr> ( "..." <logical_or_expr> )?
+
+// Precedence 13: Logical OR
+<logical_or_expr> ::= <logical_and_expr> ( "||" <logical_and_expr> )*
+
+// Precedence 12: Logical AND
+<logical_and_expr>::= <bitwise_or_expr> ( "&&" <bitwise_or_expr> )*
+
+// Precedence 11: Bitwise OR
+<bitwise_or_expr> ::= <bitwise_xor_expr> ( "|" <bitwise_xor_expr> )*
+
+// Precedence 10: Bitwise XOR
+<bitwise_xor_expr>::= <bitwise_and_expr> ( "^" <bitwise_and_expr> )*
+
+// Precedence 9: Bitwise AND
+<bitwise_and_expr>::= <equality_expr> ( "&" <equality_expr> )*
+
+// Precedence 8: Equality
+<equality_expr>   ::= <relational_expr> ( ( "==" | "!=" ) <relational_expr> )*
+
+// Precedence 7: Relational
+<relational_expr> ::= <shift_expr> ( ( "<" | "<=" | ">" | ">=" ) <shift_expr> )*
+
+// Precedence 6: Bitwise Shift
+<shift_expr>      ::= <additive_expr> ( ( "<<" | ">>" ) <additive_expr> )*
+
+// Precedence 5: Additive
+<additive_expr>   ::= <multiplicative_expr> ( ( "+" | "-" ) <multiplicative_expr> )*
+
+// Precedence 4: Multiplicative
+<multiplicative_expr> ::= <cast_expr> ( ( "*" | "/" | "%" ) <cast_expr> )*
+
+// Precedence 3: Type Casting (The `as` keyword)
+<cast_expr>   ::= <unary_expr> ( "as" <type> )*
+
+// Precedence 2: Unary (Prefix)
+<unary_expr>  ::= ( "!" | "~" | "-" | "*" | "&" ) <unary_expr>
+                | <postfix_expr>
+
+// Precedence 1: Postfix (Left-Associative: Function calls, field access, arrays, bubbling ?)
+<postfix_expr>::= <primary_expr> ( <call_suffix> | <field_suffix> | <index_suffix> | "?" )*
+<call_suffix> ::= "(" <argument_list>? ")"
+<field_suffix>::= "." <identifier>
+<index_suffix>::= "[" ( <expression> | <expression> "..." <expression> | ":" ) "]"
+
+// --- 7. PRIMARY EXPRESSIONS & CONTROL FLOW ---
+<primary_expr>::= <identifier>
+                | <literal>
+                | "(" <expression> ")"
+                | <struct_init_expr>
+                | <if_expr>
+                | <match_expr>
+                | <loop_expr>
+                | <block> 
+
+<struct_init_expr> ::= <identifier> "{" <struct_init_list>? "}"
+<struct_init_list> ::= <struct_init_field> ( "," <struct_init_field> )* ","?
+<struct_init_field>::= "." <identifier> "=" <expression>
+
+<if_expr>     ::= "if" <expression> <block> ( "elif" <expression> <block> )* ( "else" <block> )?
+
+<match_expr>  ::= "match" <expression> "{" <match_arm>* "}"
+<match_arm>   ::= <pattern> "->" <block> ","?
+<pattern>     ::= <identifier> ( "." <identifier> )* ( "(" <identifier_list> ")" )?
+
+<loop_expr>   ::= "loop" ( "(" <loop_cond> ")" )? <block>
+<loop_cond>   ::= <variable_decl_no_semi> | <expression>
+<variable_decl_no_semi> ::= <identifier> ":" <type> <assign_op> <expression>
+
+<argument_list> ::= <expression> ( "," <expression> )* ","?
+<identifier_list>::= <identifier> ( "," <identifier> )* ","?
+
+// --- 8. TERMINALS (Lexicon) ---
+<identifier>  ::= [a-zA-Z_] [a-zA-Z0-9_]*
+
+<literal>     ::= <int_lit> | <float_lit> | <string_lit> | <char_lit> | "bln"
+
+// Strict integer literal definitions
+<int_lit>     ::= "0" | [1-9] [0-9]* /* Base 10, no leading zeros */
+                | "0x" [0-9a-fA-F]+        /* Hexadecimal */
+                | "0o" [0-7]+              /* Octal */
+                | "0b" [01]+               /* Binary */
+
+// Float strictly requires no leading zeros unless the integer part is exactly '0'
+<float_lit>   ::= ( "0" | [1-9] [0-9]* ) "." [0-9]+
+
+<string_lit>  ::= '"' [^"]* '"'
+<char_lit>    ::= "'" [^'] "'"
