@@ -23,15 +23,38 @@
 <ImplBlock>    ::= "impl" <Identifier> ( "for" <TypeList> )? "{" <FuncDecl>* "}"
 <TypeList>     ::= "(" <Type> ( "," <Type> )* ")" | <Type>
 
-<FuncDecl>     ::= "fnc" <Identifier> "(" <ParamList>? ")" ( <ReturnOp> <Type> )? <Block>
+<FuncDecl>     ::= "fnc" <Identifier> "(" <ParamList>? ")" ( <ReturnOp> <Type> )? <Scope>
 <ParamList>    ::= <Param> ( "," <Param> )* ","?
 <Param>        ::= <Identifier> ":" <Type>
 <ReturnOp>     ::= ":=" | "="
 
-<Block>        ::= "{" <Statement>* "}"
+<Scope>        ::= "{" <Statement>* <Expression>? "}"
+
 <Statement>    ::= <VariableDecl> ";" 
                  | "ret" <Expression>? ";" 
-                 | <Expression> ";" /* For function calls, assignments, etc. */
+                 | "yld" <Expression>? ";" /* Loop slice accumulator */
+                 | "brk" ";"               /* Loop termination */
+                 | <Expression> ";" 
 
-<Type>         ::= "*"* "&"* <Identifier> /* Handles pointers *Self, &i32 */
+<Expression>   ::= <IfExpr> 
+                 | <MatchExpr> 
+                 | <LoopExpr>
+                 | <RangeExpr>
+                 | <Identifier> ( "." <Identifier> )* /* Method/field access */
+                 | <Literal>
+
+<IfExpr>       ::= "if" <Expression> <Scope> ( "elif" <Expression> <Scope> )* ( "else" <Scope> )?
+
+<MatchExpr>    ::= "match" <Expression> "{" <MatchArm>* "}"
+<MatchArm>     ::= <Pattern> "->" <Scope> ","?
+<Pattern>      ::= <Identifier> ( "." <Identifier> )* ( "(" <IdentifierList> ")" )?
+<IdentifierList>::= <Identifier> ( "," <Identifier> )*
+
+<LoopExpr>     ::= "loop" ( "(" <LoopCond> ")" )? <Scope>
+<LoopCond>     ::= <VariableDecl> | <Expression>
+<RangeExpr>    ::= <Expression> "..." <Expression>
+
+<Type>         ::= "*"* "&"* <Identifier>
+                 | "[" <Type> ";" ( <Expression> | ":" ) "]" /* Array or Slice */
 <Identifier>   ::= [a-zA-Z_] [a-zA-Z0-9_]*
+<Literal>      ::= [0-9]+ | '"' [^"]* '"' | "'" [^'] "'" | "bln" /* true/false */
