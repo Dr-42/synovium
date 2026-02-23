@@ -4,7 +4,8 @@
 <Declaration>  ::= <VariableDecl> ";"
                  | <StructDecl>
                  | <EnumDecl>
-                 /* Pending: <ImplBlock>, <FuncDecl> */
+                 | <ImplBlock>
+                 | <FuncDecl>
 
 <VariableDecl> ::= <Identifier> ":" <Type> <AssignOp> <Expression>
 <AssignOp>     ::= "="   /* Immutable Runtime */
@@ -19,5 +20,18 @@
 <VariantList>  ::= <Variant> ( "," <Variant> )* ","?
 <Variant>      ::= <Identifier> ( "(" <Type> ")" )?
 
-<Type>         ::= <Identifier> /* Pending: Pointers, arrays, etc. */
+<ImplBlock>    ::= "impl" <Identifier> ( "for" <TypeList> )? "{" <FuncDecl>* "}"
+<TypeList>     ::= "(" <Type> ( "," <Type> )* ")" | <Type>
+
+<FuncDecl>     ::= "fnc" <Identifier> "(" <ParamList>? ")" ( <ReturnOp> <Type> )? <Block>
+<ParamList>    ::= <Param> ( "," <Param> )* ","?
+<Param>        ::= <Identifier> ":" <Type>
+<ReturnOp>     ::= ":=" | "="
+
+<Block>        ::= "{" <Statement>* "}"
+<Statement>    ::= <VariableDecl> ";" 
+                 | "ret" <Expression>? ";" 
+                 | <Expression> ";" /* For function calls, assignments, etc. */
+
+<Type>         ::= "*"* "&"* <Identifier> /* Handles pointers *Self, &i32 */
 <Identifier>   ::= [a-zA-Z_] [a-zA-Z0-9_]*
