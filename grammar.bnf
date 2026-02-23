@@ -1,0 +1,23 @@
+// --- SYNTHEX EBNF ROOT ---
+
+<Program>      ::= <Declaration>*
+<Declaration>  ::= <VariableDecl> ";"
+                 | <StructDecl>
+                 | <EnumDecl>
+                 /* Pending: <ImplBlock>, <FuncDecl> */
+
+<VariableDecl> ::= <Identifier> ":" <Type> <AssignOp> <Expression>
+<AssignOp>     ::= "="   /* Immutable Runtime */
+                 | "~="  /* Mutable Runtime */
+                 | ":="  /* Comptime Constant */
+
+<StructDecl>   ::= "struct" <Identifier> "{" <FieldList>? "}"
+<FieldList>    ::= <Field> ( "," <Field> )* ","?
+<Field>        ::= <Identifier> ":" <Type>
+
+<EnumDecl>     ::= "enum" <Identifier> "{" <VariantList>? "}"
+<VariantList>  ::= <Variant> ( "," <Variant> )* ","?
+<Variant>      ::= <Identifier> ( "(" <Type> ")" )?
+
+<Type>         ::= <Identifier> /* Pending: Pointers, arrays, etc. */
+<Identifier>   ::= [a-zA-Z_] [a-zA-Z0-9_]*
