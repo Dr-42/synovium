@@ -1,5 +1,12 @@
 package lexer
 
+// Span tracks the exact byte offsets in the source string.
+// Start is inclusive, End is exclusive (like Go slices).
+type Span struct {
+	Start int
+	End   int
+}
+
 type TokenType string
 
 type Token struct {
@@ -7,40 +14,79 @@ type Token struct {
 	Literal string
 	Line    int
 	Column  int
+	Span    Span
 }
 
-// Token Types
 const (
-	ILLEGAL = "ILLEGAL"
-	EOF     = "EOF"
+	ILLEGAL TokenType = "ILLEGAL"
+	EOF     TokenType = "EOF"
 
-	// Identifiers + Literals
-	IDENT  = "IDENT"
-	INT    = "INT"
-	FLOAT  = "FLOAT"
-	STRING = "STRING"
-	CHAR   = "CHAR"
+	IDENT  TokenType = "IDENT"
+	INT    TokenType = "INT"
+	FLOAT  TokenType = "FLOAT"
+	STRING TokenType = "STRING"
+	CHAR   TokenType = "CHAR"
 
-	// Operators
-	ASSIGN          = "="
-	MUT_ASSIGN      = "~="
-	COMPTIME_ASSIGN = ":="
-	COLON           = ":"
+	ASSIGN      TokenType = "="
+	DECL_ASSIGN TokenType = ":="
+	MUT_ASSIGN  TokenType = "~="
 
-	// Delimiters
-	COMMA     = ","
-	SEMICOLON = ";"
-	LPAREN    = "("
-	RPAREN    = ")"
-	LBRACE    = "{"
-	RBRACE    = "}"
+	PLUS     TokenType = "+"
+	MINUS    TokenType = "-"
+	ASTERISK TokenType = "*"
+	SLASH    TokenType = "/"
+	MOD      TokenType = "%"
 
-	// Keywords
-	STRUCT = "STRUCT"
-	ENUM   = "ENUM"
-	IMPL   = "IMPL"
-	FNC    = "FNC"
-	RET    = "RET"
+	BANG     TokenType = "!"
+	TILDE    TokenType = "~"
+	AMPERS   TokenType = "&"
+	PIPE     TokenType = "|"
+	CARET    TokenType = "^"
+	QUESTION TokenType = "?"
+
+	LSHIFT TokenType = "<<"
+	RSHIFT TokenType = ">>"
+
+	AND    TokenType = "&&"
+	OR     TokenType = "||"
+	EQ     TokenType = "=="
+	NOT_EQ TokenType = "!="
+	LT     TokenType = "<"
+	LTE    TokenType = "<="
+	GT     TokenType = ">"
+	GTE    TokenType = ">="
+
+	ARROW TokenType = "->"
+	RANGE TokenType = "..."
+	DOT   TokenType = "."
+
+	COMMA     TokenType = ","
+	COLON     TokenType = ":"
+	SEMICOLON TokenType = ";"
+
+	LPAREN   TokenType = "("
+	RPAREN   TokenType = ")"
+	LBRACE   TokenType = "{"
+	RBRACE   TokenType = "}"
+	LBRACKET TokenType = "["
+	RBRACKET TokenType = "]"
+
+	STRUCT TokenType = "STRUCT"
+	ENUM   TokenType = "ENUM"
+	IMPL   TokenType = "IMPL"
+	FNC    TokenType = "FNC"
+	RET    TokenType = "RET"
+	YLD    TokenType = "YLD"
+	BRK    TokenType = "BRK"
+	IF     TokenType = "IF"
+	ELIF   TokenType = "ELIF"
+	ELSE   TokenType = "ELSE"
+	MATCH  TokenType = "MATCH"
+	LOOP   TokenType = "LOOP"
+	AS     TokenType = "AS"
+
+	TRUE  TokenType = "TRUE"
+	FALSE TokenType = "FALSE"
 )
 
 var keywords = map[string]TokenType{
@@ -49,10 +95,18 @@ var keywords = map[string]TokenType{
 	"impl":   IMPL,
 	"fnc":    FNC,
 	"ret":    RET,
+	"yld":    YLD,
+	"brk":    BRK,
+	"if":     IF,
+	"elif":   ELIF,
+	"else":   ELSE,
+	"match":  MATCH,
+	"loop":   LOOP,
+	"as":     AS,
+	"true":   TRUE,
+	"false":  FALSE,
 }
 
-// LookupIdent checks if a given identifier is a reserved keyword.
-// If it is, it returns the keyword's TokenType. Otherwise, it returns IDENT.
 func LookupIdent(ident string) TokenType {
 	if tok, ok := keywords[ident]; ok {
 		return tok
