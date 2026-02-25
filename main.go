@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"synovium/lexer"
+	"synovium/parser"
 )
 
 func main() {
@@ -12,25 +13,40 @@ func main() {
 		os.Exit(1)
 	}
 
-	content, err := os.ReadFile(os.Args[1])
+	filename := os.Args[1]
+	content, err := os.ReadFile(filename)
 	if err != nil {
-		fmt.Printf("Error: could not read file '%s'\n%v\n", os.Args[1], err)
+		fmt.Printf("Error: could not read file '%s'\n%v\n", filename, err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Lexing: %s\n", os.Args[1])
-	fmt.Println("-------------------------------------------------------------------------")
-	fmt.Printf("%-5s | %-5s | %-11s | %-15s | %s\n", "Line", "Col", "Span[S:E]", "Type", "Literal")
-	fmt.Println("-------------------------------------------------------------------------")
+	fmt.Println("======================================================")
+	fmt.Printf(" COMPILING: %s\n", filename)
+	fmt.Println("======================================================")
 
+	// 1. Init Lexer & Parser
 	l := lexer.New(string(content))
+	p := parser.New(l)
 
-	for {
-		tok := l.NextToken()
-		spanStr := fmt.Sprintf("[%d:%d]", tok.Span.Start, tok.Span.End)
-		fmt.Printf("%-5d | %-5d | %-11s | %-15s | '%s'\n", tok.Line, tok.Column, spanStr, tok.Type, tok.Literal)
-		if tok.Type == lexer.EOF {
-			break
+	// 2. Build the AST
+	program := p.ParseSourceFile()
+
+	// 3. Print Errors if any
+	if len(p.Errors()) != 0 {
+		fmt.Println("\n❌ PARSE ERRORS:")
+		for _, msg := range p.Errors() {
+			fmt.Printf("  - %s\n", msg)
+		}
+		fmt.Println("\n⚠️  Showing partial AST up to the point of failure:")
+	} else {
+		fmt.Println("\n✅ PARSING SUCCESSFUL. AST GENERATED:")
+	}
+
+	// 4. Print the AST
+	if program != nil {
+		for i, decl := range program.Declarations {
+			// %#v prints the Go structs with their field names so we can inspect the tree
+			fmt.Printf("\n[Node %d] %#v\n", i, decl)
 		}
 	}
 }

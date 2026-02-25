@@ -72,7 +72,7 @@ func (b *Block) Span() lexer.Span {
 type VariableDecl struct {
 	Token    lexer.Token // The identifier token
 	Name     *Identifier
-	Type     *TypeNode
+	Type     Type
 	Operator string // '=', '~=', or ':='
 	Value    Expr
 }
@@ -141,10 +141,100 @@ func (i *InfixExpr) Span() lexer.Span {
 // TYPES
 // ============================================================================
 
-// TypeNode represents a parsed type signature like `*&std.Vec3` or `[i32; 10]`
-type TypeNode struct {
-	Token lexer.Token
-	Value string // Simplified for now, we will expand this to handle arrays/pointers
+// Type is a specialized interface for type signatures so we can't accidentally
+// assign an Expression where a Type is expected.
+type Type interface {
+	Node
+	typeNode()
 }
 
-func (t *TypeNode) Span() lexer.Span { return t.Token.Span }
+// NamedType handles intrinsics (i32, str) and structs/namespaces (std.Vec3)
+type NamedType struct {
+	Token       lexer.Token // The first identifier token
+	Name        string      // The full name (e.g., "i32" or "std.Vec3")
+	IsIntrinsic bool        // True if it's one of Synovium's built-in types
+	EndSpan     int         // We track the end byte for namespaces
+}
+
+func (n *NamedType) typeNode() {}
+func (n *NamedType) Span() lexer.Span {
+	return lexer.Span{Start: n.Token.Span.Start, End: n.EndSpan}
+}
+
+// PointerType handles '*' pointers
+type PointerType struct {
+	Token lexer.Token // The '*' token
+	Base  Type
+}
+
+func (p *PointerType) typeNode() {}
+func (p *PointerType) Span() lexer.Span {
+	return lexer.Span{Start: p.Token.Span.Start, End: p.Base.Span().End}
+}
+
+// ReferenceType handles '&' references
+type ReferenceType struct {
+	Token lexer.Token // The '&' token
+	Base  Type
+}
+
+func (r *ReferenceType) typeNode() {}
+func (r *ReferenceType) Span() lexer.Span {
+	return lexer.Span{Start: r.Token.Span.Start, End: r.Base.Span().End}
+}
+
+// ArrayType handles arrays [i32; 10] and slices [i32; :]
+type ArrayType struct {
+	Token   lexer.Token // The '[' token
+	Base    Type
+	Size    Expr // The capacity expression (nil if it's a slice)
+	IsSlice bool // True if the size was ':'
+	EndSpan int  // The ']' token end byte
+}
+
+func (a *ArrayType) typeNode() {}
+func (a *ArrayType) Span() lexer.Span {
+	return lexer.Span{Start: a.Token.Span.Start, End: a.EndSpan}
+}
+
+// ============================================================================
+// POSTFIX EXPRESSIONS
+// ============================================================================
+
+// CallExpr represents `leftExp(arg1, arg2)`
+type CallExpr struct {
+	Token     lexer.Token // The '(' token
+	Function  Expr        // Can be an Identifier, FieldAccess, or even another CallExpr
+	Arguments []Expr
+	EndSpan   int // The ')' token end byte
+}
+
+func (c *CallExpr) exprNode() {}
+func (c *CallExpr) Span() lexer.Span {
+	return lexer.Span{Start: c.Function.Span().Start, End: c.EndSpan}
+}
+
+// FieldAccessExpr represents `leftExp.identifier`
+type FieldAccessExpr struct {
+	Token lexer.Token // The '.' token
+	Left  Expr
+	Field *Identifier
+}
+
+func (f *FieldAccessExpr) exprNode() {}
+func (f *FieldAccessExpr) Span() lexer.Span {
+	return lexer.Span{Start: f.Left.Span().Start, End: f.Field.Span().End}
+}
+
+// IndexExpr represents `leftExp[index]` or `leftExp[start...end]`
+type IndexExpr struct {
+	Token   lexer.Token // The '[' token
+	Left    Expr
+	Index   Expr // Can be a standard Expr or a RangeExpr
+	EndSpan int  // The ']' token end byte
+}
+
+func (i *IndexExpr) exprNode() {}
+func (i *IndexExpr) Span() lexer.Span {
+	return lexer.Span{Start: i.Left.Span().Start, End: i.EndSpan}
+}
