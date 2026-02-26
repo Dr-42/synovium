@@ -7,7 +7,7 @@ import (
 
 // --- PREFIX IMPLEMENTATIONS ---
 func (p *Parser) parseIdentifier() ast.Expr {
-	if p.peekTokenIs(lexer.LBRACE) {
+	if !p.disallowStructInit && p.peekTokenIs(lexer.LBRACE) {
 		return p.parseStructInitExpression()
 	}
 	return &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
@@ -148,10 +148,6 @@ func (p *Parser) parseExpressionList(endToken lexer.TokenType) []ast.Expr {
 }
 
 // Stubs for future implementation
-func (p *Parser) parseIfExpression() ast.Expr         { return nil }
-func (p *Parser) parseMatchExpression() ast.Expr      { return nil }
-func (p *Parser) parseLoopExpression() ast.Expr       { return nil }
-func (p *Parser) parseStructInitExpression() ast.Expr { return nil }
 func (p *Parser) parseFloatLiteral() ast.Expr {
 	return &ast.FloatLiteral{Token: p.curToken, Value: p.curToken.Literal}
 }
@@ -163,4 +159,213 @@ func (p *Parser) parseCharLiteral() ast.Expr {
 }
 func (p *Parser) parseBoolLiteral() ast.Expr {
 	return &ast.BoolLiteral{Token: p.curToken, Value: p.curTokenIs(lexer.TRUE)}
+}
+
+// ============================================================================
+// CONTROL FLOW & COMPLEX EXPRESSIONS
+// ============================================================================
+
+func (p *Parser) parseIfExpression() ast.Expr {
+	expr := &ast.IfExpr{Token: p.curToken}
+
+	p.nextToken() // Move past 'if'
+
+	// Disable struct init to prevent `if cond {` from being eaten as a struct literal
+	p.disallowStructInit = true
+	expr.Condition = p.parseExpression(LOWEST)
+	p.disallowStructInit = false
+
+	if !p.expectPeek(lexer.LBRACE) {
+		return nil
+	}
+	expr.Body = p.parseBlockExpression().(*ast.Block)
+
+	for p.peekTokenIs(lexer.ELIF) {
+		p.nextToken() // Move to 'elif'
+		p.nextToken() // Move past 'elif' to the condition
+
+		p.disallowStructInit = true
+		cond := p.parseExpression(LOWEST)
+		p.disallowStructInit = false
+
+		if !p.expectPeek(lexer.LBRACE) {
+			return nil
+		}
+		body := p.parseBlockExpression().(*ast.Block)
+
+		expr.ElifConds = append(expr.ElifConds, cond)
+		expr.ElifBodies = append(expr.ElifBodies, body)
+	}
+
+	if p.peekTokenIs(lexer.ELSE) {
+		p.nextToken() // Move to 'else'
+		if !p.expectPeek(lexer.LBRACE) {
+			return nil
+		}
+		expr.ElseBody = p.parseBlockExpression().(*ast.Block)
+	}
+
+	return expr
+}
+
+func (p *Parser) parseLoopExpression() ast.Expr {
+	expr := &ast.LoopExpr{Token: p.curToken} // The 'loop' token
+
+	// Optional condition: loop (i : i32 = 0...10) { ... }
+	if p.peekTokenIs(lexer.LPAREN) {
+		p.nextToken() // move to '('
+		p.nextToken() // move inside '('
+
+		// Is it a variable declaration like `i : i32 = 0...10` or just an expression like `true`?
+		if p.curTokenIs(lexer.IDENT) && p.peekTokenIs(lexer.COLON) {
+			expr.Condition = p.parseVariableDecl()
+		} else {
+			expr.Condition = p.parseExpression(LOWEST)
+		}
+
+		if !p.expectPeek(lexer.RPAREN) {
+			return nil
+		}
+	}
+
+	if !p.expectPeek(lexer.LBRACE) {
+		return nil
+	}
+	expr.Body = p.parseBlockExpression().(*ast.Block)
+
+	return expr
+}
+
+func (p *Parser) parseMatchExpression() ast.Expr {
+	expr := &ast.MatchExpr{Token: p.curToken}
+
+	p.nextToken() // move past 'match'
+
+	// Disable struct init to prevent `match s {` from eating the block
+	p.disallowStructInit = true
+	expr.Value = p.parseExpression(LOWEST)
+	p.disallowStructInit = false
+
+	if !p.expectPeek(lexer.LBRACE) {
+		return nil
+	}
+
+	for !p.peekTokenIs(lexer.RBRACE) && !p.peekTokenIs(lexer.EOF) {
+		p.nextToken() // move to the start of the pattern arm
+
+		arm := &ast.MatchArm{Token: p.curToken}
+
+		patternName := p.curToken.Literal
+		for p.peekTokenIs(lexer.DOT) {
+			p.nextToken()
+			patternName += "."
+			if !p.expectPeek(lexer.IDENT) {
+				return nil
+			}
+			patternName += p.curToken.Literal
+		}
+		arm.Pattern = &ast.Identifier{Token: p.curToken, Value: patternName}
+
+		if p.peekTokenIs(lexer.LPAREN) {
+			p.nextToken()
+			for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
+				p.nextToken()
+				if p.curTokenIs(lexer.IDENT) {
+					arm.Params = append(arm.Params, &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal})
+				}
+				if p.peekTokenIs(lexer.COMMA) {
+					p.nextToken()
+				}
+			}
+			p.expectPeek(lexer.RPAREN)
+		}
+
+		if !p.expectPeek(lexer.ARROW) {
+			return nil
+		}
+		if !p.expectPeek(lexer.LBRACE) {
+			return nil
+		}
+		arm.Body = p.parseBlockExpression().(*ast.Block)
+
+		expr.Arms = append(expr.Arms, arm)
+
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+		}
+	}
+
+	if !p.expectPeek(lexer.RBRACE) {
+		return nil
+	}
+	expr.EndSpan = p.curToken.Span.End
+	return expr
+}
+
+func (p *Parser) parseStructInitExpression() ast.Expr {
+	// We are currently sitting on the IDENTifier before the '{'
+	expr := &ast.StructInitExpr{
+		Token: p.curToken,
+		Name:  &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
+	}
+
+	p.nextToken() // move to '{'
+
+	for !p.peekTokenIs(lexer.RBRACE) && !p.peekTokenIs(lexer.EOF) {
+		p.nextToken() // Move to '.'
+		if !p.curTokenIs(lexer.DOT) {
+			p.errors = append(p.errors, "struct initialization fields must start with '.'")
+			return nil
+		}
+
+		field := &ast.StructInitField{Token: p.curToken}
+
+		if !p.expectPeek(lexer.IDENT) {
+			return nil
+		}
+		field.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+
+		if !p.expectPeek(lexer.ASSIGN) {
+			return nil
+		}
+		p.nextToken() // move onto the expression
+		field.Value = p.parseExpression(LOWEST)
+
+		expr.Fields = append(expr.Fields, field)
+
+		// Consume optional comma
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+		}
+	}
+
+	if !p.expectPeek(lexer.RBRACE) {
+		return nil
+	}
+	expr.EndSpan = p.curToken.Span.End
+	return expr
+}
+
+// ============================================================================
+// INFIX COMPLEX EXPRESSIONS
+// ============================================================================
+
+func (p *Parser) parseCastExpression(left ast.Expr) ast.Expr {
+	expr := &ast.CastExpr{
+		Token: p.curToken, // The 'as' token
+		Left:  left,
+	}
+
+	p.nextToken() // Move to the type
+	expr.Type = p.parseType()
+
+	return expr
+}
+
+func (p *Parser) parseBubbleExpression(left ast.Expr) ast.Expr {
+	// The '?' operator is pure postfix, no right-hand side needed.
+	return &ast.BubbleExpr{
+		Token: p.curToken,
+		Left:  left,
+	}
 }

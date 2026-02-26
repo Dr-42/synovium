@@ -344,3 +344,131 @@ type ImplDecl struct {
 
 func (i *ImplDecl) declNode()        {}
 func (i *ImplDecl) Span() lexer.Span { return lexer.Span{Start: i.Token.Span.Start, End: i.EndSpan} }
+
+// ============================================================================
+// CONTROL FLOW & COMPLEX EXPRESSIONS
+// ============================================================================
+
+type IfExpr struct {
+	Token      lexer.Token // The 'if' token
+	Condition  Expr
+	Body       *Block
+	ElifConds  []Expr
+	ElifBodies []*Block
+	ElseBody   *Block
+}
+
+func (i *IfExpr) exprNode() {}
+func (i *IfExpr) Span() lexer.Span {
+	end := i.Body.Span().End
+	if i.ElseBody != nil {
+		end = i.ElseBody.Span().End
+	} else if len(i.ElifBodies) > 0 {
+		end = i.ElifBodies[len(i.ElifBodies)-1].Span().End
+	}
+	return lexer.Span{Start: i.Token.Span.Start, End: end}
+}
+
+type MatchExpr struct {
+	Token   lexer.Token // The 'match' token
+	Value   Expr
+	Arms    []*MatchArm
+	EndSpan int
+}
+
+func (m *MatchExpr) exprNode()        {}
+func (m *MatchExpr) Span() lexer.Span { return lexer.Span{Start: m.Token.Span.Start, End: m.EndSpan} }
+
+type MatchArm struct {
+	Token   lexer.Token
+	Pattern *Identifier   // Simplified for now, can be expanded to full paths
+	Params  []*Identifier // For e.g. Status.Running(speed)
+	Body    *Block
+}
+
+type LoopExpr struct {
+	Token     lexer.Token // The 'loop' token
+	Condition Node        // Can be an Expr OR a VariableDecl (e.g., i: i32 = 0...10)
+	Body      *Block
+}
+
+func (l *LoopExpr) exprNode() {}
+func (l *LoopExpr) Span() lexer.Span {
+	return lexer.Span{Start: l.Token.Span.Start, End: l.Body.Span().End}
+}
+
+type StructInitExpr struct {
+	Token   lexer.Token // The identifier before '{'
+	Name    *Identifier
+	Fields  []*StructInitField
+	EndSpan int
+}
+
+func (s *StructInitExpr) exprNode() {}
+func (s *StructInitExpr) Span() lexer.Span {
+	return lexer.Span{Start: s.Token.Span.Start, End: s.EndSpan}
+}
+
+type StructInitField struct {
+	Token lexer.Token // The '.' token
+	Name  *Identifier
+	Value Expr
+}
+
+type CastExpr struct {
+	Token lexer.Token // The 'as' token
+	Left  Expr
+	Type  Type
+}
+
+func (c *CastExpr) exprNode() {}
+func (c *CastExpr) Span() lexer.Span {
+	return lexer.Span{Start: c.Left.Span().Start, End: c.Type.Span().End}
+}
+
+type BubbleExpr struct {
+	Token lexer.Token // The '?' token
+	Left  Expr
+}
+
+func (b *BubbleExpr) exprNode() {}
+func (b *BubbleExpr) Span() lexer.Span {
+	return lexer.Span{Start: b.Left.Span().Start, End: b.Token.Span.End}
+}
+
+// ============================================================================
+// STATEMENTS
+// ============================================================================
+
+type ReturnStmt struct {
+	Token lexer.Token // 'ret'
+	Value Expr        // Optional
+}
+
+func (r *ReturnStmt) stmtNode() {}
+func (r *ReturnStmt) Span() lexer.Span {
+	if r.Value != nil {
+		return lexer.Span{Start: r.Token.Span.Start, End: r.Value.Span().End}
+	}
+	return r.Token.Span
+}
+
+type YieldStmt struct {
+	Token lexer.Token // 'yld'
+	Value Expr        // Optional
+}
+
+func (y *YieldStmt) stmtNode() {}
+func (y *YieldStmt) Span() lexer.Span {
+	if y.Value != nil {
+		return lexer.Span{Start: y.Token.Span.Start, End: y.Value.Span().End}
+	}
+	return y.Token.Span
+}
+
+type BreakStmt struct {
+	Token lexer.Token // 'brk'
+}
+
+func (b *BreakStmt) stmtNode()        {}
+func (b *BreakStmt) Span() lexer.Span { return b.Token.Span }

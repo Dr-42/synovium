@@ -70,6 +70,8 @@ type Parser struct {
 
 	prefixParseFns map[lexer.TokenType]prefixParseFn
 	infixParseFns  map[lexer.TokenType]infixParseFn
+
+	disallowStructInit bool // Resolves the `if/match IDENT {` vs `StructInit {` ambiguity
 }
 
 func New(l *lexer.Lexer) *Parser {
@@ -116,6 +118,8 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerInfix(lexer.LPAREN, p.parseCallExpression)
 	p.registerInfix(lexer.DOT, p.parseFieldAccess)
 	p.registerInfix(lexer.LBRACKET, p.parseIndexExpression)
+	p.registerInfix(lexer.AS, p.parseCastExpression)
+	p.registerInfix(lexer.QUESTION, p.parseBubbleExpression)
 
 	p.nextToken()
 	p.nextToken()
