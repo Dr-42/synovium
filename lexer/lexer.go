@@ -97,6 +97,9 @@ func (l *Lexer) NextToken() Token {
 		if l.peekChar() == '>' {
 			l.readChar()
 			tok = makeToken(ARROW, "->", 2)
+		} else if l.peekChar() == '=' {
+			l.readChar()
+			tok = makeToken(MIN_ASSIGN, "-=", 2)
 		} else {
 			tok = makeToken(MINUS, string(l.ch), 1)
 		}
@@ -150,13 +153,33 @@ func (l *Lexer) NextToken() Token {
 			tok = makeToken(DOT, string(l.ch), 1)
 		}
 	case '+':
-		tok = makeToken(PLUS, string(l.ch), 1)
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = makeToken(PLUS_ASSIGN, "+=", 2)
+		} else {
+			tok = makeToken(PLUS, string(l.ch), 1)
+		}
 	case '*':
-		tok = makeToken(ASTERISK, string(l.ch), 1)
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = makeToken(MUL_ASSIGN, "*=", 2)
+		} else {
+			tok = makeToken(ASTERISK, string(l.ch), 1)
+		}
 	case '/':
-		tok = makeToken(SLASH, string(l.ch), 1)
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = makeToken(DIV_ASSIGN, "/=", 2)
+		} else {
+			tok = makeToken(SLASH, string(l.ch), 1)
+		}
 	case '%':
-		tok = makeToken(MOD, string(l.ch), 1)
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = makeToken(MOD_ASSIGN, "%=", 2)
+		} else {
+			tok = makeToken(MOD, string(l.ch), 1)
+		}
 	case '^':
 		tok = makeToken(CARET, string(l.ch), 1)
 	case '?':

@@ -32,6 +32,11 @@ var precedences = map[lexer.TokenType]int{
 	lexer.ASSIGN:      ASSIGN,
 	lexer.MUT_ASSIGN:  ASSIGN,
 	lexer.DECL_ASSIGN: ASSIGN,
+	lexer.PLUS_ASSIGN: ASSIGN,
+	lexer.MIN_ASSIGN:  ASSIGN,
+	lexer.MUL_ASSIGN:  ASSIGN,
+	lexer.DIV_ASSIGN:  ASSIGN,
+	lexer.MOD_ASSIGN:  ASSIGN,
 	lexer.RANGE:       RANGE,
 	lexer.OR:          LOGICAL_OR,
 	lexer.AND:         LOGICAL_AND,
@@ -110,6 +115,7 @@ func New(l *lexer.Lexer) *Parser {
 		lexer.EQ, lexer.NOT_EQ, lexer.LT, lexer.LTE, lexer.GT, lexer.GTE,
 		lexer.AND, lexer.OR, lexer.PIPE, lexer.CARET, lexer.AMPERS,
 		lexer.LSHIFT, lexer.RSHIFT, lexer.RANGE, lexer.ASSIGN, lexer.MUT_ASSIGN,
+		lexer.PLUS_ASSIGN, lexer.MIN_ASSIGN, lexer.MUL_ASSIGN, lexer.DIV_ASSIGN, lexer.MOD_ASSIGN,
 	}
 	for _, t := range infixes {
 		p.registerInfix(t, p.parseInfixExpression)

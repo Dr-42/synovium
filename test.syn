@@ -54,7 +54,7 @@ fnc process_data(input : [i32; :]) = [i32; :] {
     // Loop with range and yield
     results : [i32; :] = loop (i : i32 = 0...10) {
         if i % 2 == 0 {
-            counter ~= counter + 1;
+            counter += 1;
             yld i * 2;
         } elif i == 9 {
             brk;

@@ -48,12 +48,13 @@ func (p *Parser) parseInfixExpression(left ast.Expr) ast.Expr {
 	p.nextToken()
 
 	// Right associativity trick for assignments
-	if expr.Operator == "=" || expr.Operator == "~=" || expr.Operator == ":=" {
+	if expr.Operator == "=" || expr.Operator == "~=" || expr.Operator == ":=" ||
+		expr.Operator == "+=" || expr.Operator == "-=" || expr.Operator == "*=" ||
+		expr.Operator == "/=" || expr.Operator == "%=" {
 		expr.Right = p.parseExpression(precedence - 1)
 	} else {
 		expr.Right = p.parseExpression(precedence)
 	}
-
 	return expr
 }
 

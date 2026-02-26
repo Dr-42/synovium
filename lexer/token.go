@@ -30,6 +30,11 @@ const (
 	ASSIGN      TokenType = "="
 	DECL_ASSIGN TokenType = ":="
 	MUT_ASSIGN  TokenType = "~="
+	PLUS_ASSIGN TokenType = "+="
+	MIN_ASSIGN  TokenType = "-="
+	MUL_ASSIGN  TokenType = "*="
+	DIV_ASSIGN  TokenType = "/="
+	MOD_ASSIGN  TokenType = "%="
 
 	PLUS     TokenType = "+"
 	MINUS    TokenType = "-"
