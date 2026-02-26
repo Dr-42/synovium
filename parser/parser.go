@@ -84,6 +84,11 @@ func New(l *lexer.Lexer) *Parser {
 	// --- PREFIX REGISTRATIONS ---
 	p.registerPrefix(lexer.IDENT, p.parseIdentifier)
 	p.registerPrefix(lexer.INT, p.parseIntLiteral)
+	p.registerPrefix(lexer.FLOAT, p.parseFloatLiteral)
+	p.registerPrefix(lexer.STRING, p.parseStringLiteral)
+	p.registerPrefix(lexer.CHAR, p.parseCharLiteral)
+	p.registerPrefix(lexer.TRUE, p.parseBoolLiteral)
+	p.registerPrefix(lexer.FALSE, p.parseBoolLiteral)
 
 	p.registerPrefix(lexer.BANG, p.parsePrefixExpression)
 	p.registerPrefix(lexer.TILDE, p.parsePrefixExpression)

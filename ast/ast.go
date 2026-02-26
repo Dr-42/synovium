@@ -238,3 +238,109 @@ func (i *IndexExpr) exprNode() {}
 func (i *IndexExpr) Span() lexer.Span {
 	return lexer.Span{Start: i.Left.Span().Start, End: i.EndSpan}
 }
+
+// ============================================================================
+// ADDITIONAL LITERALS
+// ============================================================================
+
+type FloatLiteral struct {
+	Token lexer.Token
+	Value string // Keeping as string to retain exact formatting before backend compilation
+}
+
+func (f *FloatLiteral) exprNode()        {}
+func (f *FloatLiteral) Span() lexer.Span { return f.Token.Span }
+
+type StringLiteral struct {
+	Token lexer.Token
+	Value string
+}
+
+func (s *StringLiteral) exprNode()        {}
+func (s *StringLiteral) Span() lexer.Span { return s.Token.Span }
+
+type CharLiteral struct {
+	Token lexer.Token
+	Value string
+}
+
+func (c *CharLiteral) exprNode()        {}
+func (c *CharLiteral) Span() lexer.Span { return c.Token.Span }
+
+type BoolLiteral struct {
+	Token lexer.Token
+	Value bool
+}
+
+func (b *BoolLiteral) exprNode()        {}
+func (b *BoolLiteral) Span() lexer.Span { return b.Token.Span }
+
+// ============================================================================
+// TOP LEVEL DECLARATIONS
+// ============================================================================
+
+// FunctionDecl maps to: fnc <identifier> "(" <parameter_list>? ")" ( <return_op> <type> )? <block>
+type FunctionDecl struct {
+	Token      lexer.Token
+	Name       *Identifier
+	Parameters []*Parameter
+	ReturnOp   string // "=" or ":="
+	ReturnType Type   // Can be nil
+	Body       *Block
+}
+
+func (f *FunctionDecl) declNode() {}
+func (f *FunctionDecl) Span() lexer.Span {
+	return lexer.Span{Start: f.Token.Span.Start, End: f.Body.Span().End}
+}
+
+type Parameter struct {
+	Token lexer.Token
+	Name  *Identifier
+	Type  Type
+}
+
+// StructDecl maps to: struct <identifier> { <field_decl_list>? }
+type StructDecl struct {
+	Token   lexer.Token
+	Name    *Identifier
+	Fields  []*FieldDecl
+	EndSpan int
+}
+
+func (s *StructDecl) declNode()        {}
+func (s *StructDecl) Span() lexer.Span { return lexer.Span{Start: s.Token.Span.Start, End: s.EndSpan} }
+
+type FieldDecl struct {
+	Token lexer.Token
+	Name  *Identifier
+	Type  Type
+}
+
+// EnumDecl maps to: enum <identifier> { <variant_list>? }
+type EnumDecl struct {
+	Token    lexer.Token
+	Name     *Identifier
+	Variants []*VariantDecl
+	EndSpan  int
+}
+
+func (e *EnumDecl) declNode()        {}
+func (e *EnumDecl) Span() lexer.Span { return lexer.Span{Start: e.Token.Span.Start, End: e.EndSpan} }
+
+type VariantDecl struct {
+	Token lexer.Token
+	Name  *Identifier
+	Types []Type // e.g., Running(f64, i32)
+}
+
+// ImplDecl maps to: impl <identifier> { <function_decl>* }
+type ImplDecl struct {
+	Token   lexer.Token
+	Target  *Identifier
+	Methods []*FunctionDecl
+	EndSpan int
+}
+
+func (i *ImplDecl) declNode()        {}
+func (i *ImplDecl) Span() lexer.Span { return lexer.Span{Start: i.Token.Span.Start, End: i.EndSpan} }

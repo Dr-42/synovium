@@ -152,3 +152,15 @@ func (p *Parser) parseIfExpression() ast.Expr         { return nil }
 func (p *Parser) parseMatchExpression() ast.Expr      { return nil }
 func (p *Parser) parseLoopExpression() ast.Expr       { return nil }
 func (p *Parser) parseStructInitExpression() ast.Expr { return nil }
+func (p *Parser) parseFloatLiteral() ast.Expr {
+	return &ast.FloatLiteral{Token: p.curToken, Value: p.curToken.Literal}
+}
+func (p *Parser) parseStringLiteral() ast.Expr {
+	return &ast.StringLiteral{Token: p.curToken, Value: p.curToken.Literal}
+}
+func (p *Parser) parseCharLiteral() ast.Expr {
+	return &ast.CharLiteral{Token: p.curToken, Value: p.curToken.Literal}
+}
+func (p *Parser) parseBoolLiteral() ast.Expr {
+	return &ast.BoolLiteral{Token: p.curToken, Value: p.curTokenIs(lexer.TRUE)}
+}
