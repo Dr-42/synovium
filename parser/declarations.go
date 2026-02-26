@@ -185,50 +185,20 @@ func (p *Parser) parseImplDecl() ast.Decl {
 
 // --- FUNCTION DECLARATION ---
 func (p *Parser) parseFunctionDecl() ast.Decl {
-	decl := &ast.FunctionDecl{Token: p.curToken}
-	if !p.expectPeek(lexer.IDENT) {
-		return nil
-	}
-	decl.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
-
-	if !p.expectPeek(lexer.LPAREN) {
+	// Let the expression engine parse the signature and body!
+	lit := p.parseFunctionLiteral()
+	if lit == nil {
 		return nil
 	}
 
-	// Parse parameters
-	for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
-		p.nextToken() // Move to identifier
-		param := &ast.Parameter{
-			Token: p.curToken,
-			Name:  &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
-		}
-		if !p.expectPeek(lexer.COLON) {
-			return nil
-		}
-		p.nextToken() // Move to type
-		param.Type = p.parseType()
-		decl.Parameters = append(decl.Parameters, param)
+	decl := lit.(*ast.FunctionDecl)
 
-		if p.peekTokenIs(lexer.COMMA) {
-			p.nextToken()
-		}
-	}
-	if !p.expectPeek(lexer.RPAREN) {
+	// The only difference between a lambda and a top-level function
+	// is that top-level functions MUST have a name.
+	if decl.Name == nil {
+		p.errors = append(p.errors, "top-level function declarations must have a name")
 		return nil
 	}
-
-	// Optional return type
-	if p.peekTokenIs(lexer.ASSIGN) || p.peekTokenIs(lexer.DECL_ASSIGN) {
-		p.nextToken() // Move to '=' or ':='
-		decl.ReturnOp = p.curToken.Literal
-		p.nextToken() // Move to type
-		decl.ReturnType = p.parseType()
-	}
-
-	if !p.expectPeek(lexer.LBRACE) {
-		return nil
-	}
-	decl.Body = p.parseBlockExpression().(*ast.Block)
 
 	return decl
 }

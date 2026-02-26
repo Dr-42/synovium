@@ -38,6 +38,10 @@ func (p *Parser) parseBaseType() ast.Type {
 		return p.parseNamedType()
 	}
 
+	if p.curTokenIs(lexer.FNC) {
+		return p.parseFunctionType()
+	}
+
 	p.errors = append(p.errors, fmt.Sprintf("expected a type at line %d, got %s", p.curToken.Line, p.curToken.Literal))
 	return nil
 }
@@ -63,6 +67,36 @@ func (p *Parser) parseNamedType() ast.Type {
 		IsIntrinsic: intrinsicTypes[name],
 		EndSpan:     endSpan,
 	}
+}
+
+func (p *Parser) parseFunctionType() ast.Type {
+	tok := p.curToken // 'fnc'
+	if !p.expectPeek(lexer.LPAREN) {
+		return nil
+	}
+
+	funcType := &ast.FunctionType{Token: tok}
+
+	for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
+		p.nextToken()
+		funcType.Parameters = append(funcType.Parameters, p.parseType())
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+		}
+	}
+	if !p.expectPeek(lexer.RPAREN) {
+		return nil
+	}
+
+	// Optional Return Type
+	if p.peekTokenIs(lexer.ASSIGN) || p.peekTokenIs(lexer.DECL_ASSIGN) {
+		p.nextToken()
+		p.nextToken() // move onto the type
+		funcType.ReturnType = p.parseType()
+	}
+
+	funcType.EndSpan = p.curToken.Span.End
+	return funcType
 }
 
 func (p *Parser) parseArrayType() ast.Type {

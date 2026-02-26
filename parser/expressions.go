@@ -36,6 +36,57 @@ func (p *Parser) parseGroupedExpression() ast.Expr {
 	return exp
 }
 
+func (p *Parser) parseFunctionLiteral() ast.Expr {
+	decl := &ast.FunctionDecl{Token: p.curToken}
+
+	// 1. OPTIONAL Name (if it's named, it's a nested function; if not, it's a lambda)
+	if p.peekTokenIs(lexer.IDENT) {
+		p.nextToken()
+		decl.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+	}
+
+	if !p.expectPeek(lexer.LPAREN) {
+		return nil
+	}
+
+	// 2. Parameters
+	for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
+		p.nextToken() // Move to identifier
+		param := &ast.Parameter{
+			Token: p.curToken,
+			Name:  &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
+		}
+		if !p.expectPeek(lexer.COLON) {
+			return nil
+		}
+		p.nextToken() // Move to type
+		param.Type = p.parseType()
+		decl.Parameters = append(decl.Parameters, param)
+
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+		}
+	}
+	if !p.expectPeek(lexer.RPAREN) {
+		return nil
+	}
+
+	// 3. Optional Return Type
+	if p.peekTokenIs(lexer.ASSIGN) || p.peekTokenIs(lexer.DECL_ASSIGN) {
+		p.nextToken() // Move to '=' or ':='
+		decl.ReturnOp = p.curToken.Literal
+		p.nextToken() // Move to type
+		decl.ReturnType = p.parseType()
+	}
+
+	if !p.expectPeek(lexer.LBRACE) {
+		return nil
+	}
+	decl.Body = p.parseBlockExpression().(*ast.Block)
+
+	return decl
+}
+
 // --- INFIX IMPLEMENTATIONS ---
 func (p *Parser) parseInfixExpression(left ast.Expr) ast.Expr {
 	expr := &ast.InfixExpr{

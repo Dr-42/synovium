@@ -1,7 +1,24 @@
-// test.syn - Synovium Syntax Highlighting Test
+// test.syn - Synovium Unified AST Master Test
 
-// Comptime constant
+// 1. Comptime Constants
 THRESHOLD : i32 := 100;
+
+// 2. Data Structures
+struct Manager {
+    id : i32,
+    active : bln,
+}
+
+struct Motor {
+    rpm : f64,
+    id : i32,
+}
+
+struct Vec3 {
+    x : f64,
+    y : f64,
+    z : f64,
+}
 
 struct Mat3 {
     r1 : Vec3,
@@ -9,29 +26,15 @@ struct Mat3 {
     r3 : Vec3,
 }
 
-impl Vec3 {
-    fnc add(self: *Self, other: Vec3) {
-        self + other
-    }
-}
-
-// Struct definition
-struct Vec3 {
-    x : f64,
-    y : f64,
-    z : f64,
-}
-
-// Enum definition with data variants
+// 3. Enums
 enum Status {
     Idle,
     Running(f64),
     Error(str),
 }
 
-// Impl block with methods
+// 4. Impl Blocks & Methods
 impl Vec3 {
-    // Comptime function (constructor)
     fnc new(x : f64, y : f64, z : f64) := Vec3 {
         ret Vec3 {
             .x = x,
@@ -40,22 +43,49 @@ impl Vec3 {
         };
     }
 
-    // Runtime method with bubbling return
     fnc magnitude_sq(self : *Self) = f64 {
-        self.x * self.x + self.y * self.y + self.z * self.z // Bubbles!
+        self.x * self.x + self.y * self.y + self.z * self.z
     }
 }
 
-// Standard runtime function
-fnc process_data(input : [i32; :]) = [i32; :] {
-    // Mutable variable
-    counter : i32 ~= 0;
+// 5. Higher-Order Functions (Function Types as Parameters)
+fnc apply_transform(val : i32, transform : fnc(i32) = i32) = i32 {
+    ret transform(val);
+}
 
-    // Loop with range and yield
+// 6. Main Execution Block
+fnc main() = i32 {
+    // A. Simple Anonymous Lambda Assignment
+    double : fnc(i32) = i32 = fnc(x : i32) = i32 {
+        ret x * 2;
+    };
+
+    // B. Nested Named Function (Closure)
+    next : fnc(type, *Manager, i32) = i32 := fnc next_motor(T : type, m : *Manager, val : i32) = i32 {
+        // Test internal mutation and compound assignment
+        temp : i32 ~= val;
+        temp += 10;
+        ret temp;
+    };
+
+    // C. Array of Function Pointers
+    // (Must be initialized per Synovium's strict EBNF!)
+    handlers : [fnc(i32) = str; 5] = get_handlers();
+
+    // D. Struct Initialization
+    mgr : Manager = Manager {
+        .id = 42,
+        .active = true
+    };
+
+    // E. Calling nested function with comptime type parameter
+    n_motor : i32 ~= next(Motor, &mgr, 24);
+
+    // F. Looping, Yielding, and Higher-Order execution
     results : [i32; :] = loop (i : i32 = 0...10) {
         if i % 2 == 0 {
-            counter += 1;
-            yld i * 2;
+            n_motor += 1;
+            yld apply_transform(n_motor, double);
         } elif i == 9 {
             brk;
         } else {
@@ -63,30 +93,20 @@ fnc process_data(input : [i32; :]) = [i32; :] {
         }
     };
 
-    ret results;
-}
-
-// Pattern matching and casting
-fnc check_status(s : Status) = str {
-    match s {
+    // G. Object Methods and Bubbling
+    v1 : Vec3 = Vec3.new(1.0, 2.0, 3.0);
+    mag : f64 = v1.magnitude_sq()?;
+    
+    // H. Pattern Matching and Casting
+    stat : Status = Status.Running(mag);
+    msg : str = match stat {
         Status.Idle -> { "System is idle" },
         Status.Running(speed) -> { 
-            // Casting example
             metric : i32 = speed as i32;
             "System is running" 
         },
-        Status.Error(msg) -> { msg },
-    }
-}
+        Status.Error(err) -> { err },
+    };
 
-// Main execution
-fnc main() {
-    v1 : Vec3 = Vec3.new(1.0, 2.0, 3.0);
-    m1 : Mat3 = Mat3.unit();
-    m1.r1.z = 7.98;
-    v1.z = 1.5;
-    mag : f64 = v1.magnitude_sq();
-    
-    // Bubbling error test
-    val : i32 = some_fallible_call()?;
+    ret n_motor;
 }

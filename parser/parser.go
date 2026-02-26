@@ -90,6 +90,7 @@ func New(l *lexer.Lexer) *Parser {
 
 	// --- PREFIX REGISTRATIONS ---
 	p.registerPrefix(lexer.IDENT, p.parseIdentifier)
+	p.registerPrefix(lexer.FNC, p.parseFunctionLiteral) // Lambdas!
 	p.registerPrefix(lexer.INT, p.parseIntLiteral)
 	p.registerPrefix(lexer.FLOAT, p.parseFloatLiteral)
 	p.registerPrefix(lexer.STRING, p.parseStringLiteral)

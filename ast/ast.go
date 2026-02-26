@@ -109,6 +109,22 @@ type IntLiteral struct {
 	Value int64       // We will parse the hex/octal strings into actual integers here
 }
 
+// Tell the AST that FunctionDecl can be used as an expression (lambda/nested)
+func (f *FunctionDecl) exprNode() {}
+
+// FunctionType maps to: fnc(i32, *Manager) = str
+type FunctionType struct {
+	Token      lexer.Token // The 'fnc' token
+	Parameters []Type      // Note: These are just Types, not named Parameters!
+	ReturnType Type        // Optional
+	EndSpan    int
+}
+
+func (f *FunctionType) typeNode() {}
+func (f *FunctionType) Span() lexer.Span {
+	return lexer.Span{Start: f.Token.Span.Start, End: f.EndSpan}
+}
+
 func (i *IntLiteral) exprNode()        {}
 func (i *IntLiteral) Span() lexer.Span { return i.Token.Span }
 
