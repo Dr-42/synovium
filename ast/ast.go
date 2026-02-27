@@ -316,6 +316,10 @@ type Parameter struct {
 	Type  Type
 }
 
+func (p *Parameter) Span() lexer.Span {
+	return lexer.Span{Start: p.Token.Span.Start, End: p.Type.Span().End}
+}
+
 // StructDecl maps to: struct <identifier> { <field_decl_list>? }
 type StructDecl struct {
 	Token   lexer.Token

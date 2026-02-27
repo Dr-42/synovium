@@ -3,10 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"synovium/lexer"
 	"synovium/parser"
+	"synovium/sema"
 )
 
 func main() {
@@ -22,6 +22,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 1. Frontend: Lex and Parse
 	l := lexer.New(string(content))
 	p := parser.New(l)
 	program := p.ParseSourceFile()
@@ -31,106 +32,63 @@ func main() {
 		for _, msg := range p.Errors() {
 			fmt.Printf("  - %s\n", msg)
 		}
+		os.Exit(1)
+	}
+	fmt.Println("✅ Parsing Successful.")
+
+	// 2. Semantic Initialization
+	pool := sema.NewTypePool()
+	globalScope := sema.NewScope(nil)
+
+	evaluator := sema.NewEvaluator(pool)
+	evaluator.InjectBuiltins(globalScope) // Load i32, f64, bln, etc.
+
+	// 3. Top-Level Hoisting & DAG Sort
+	dag := sema.NewDAG(globalScope)
+	sortedDecls, err := dag.BuildAndSort(program)
+	if err != nil {
+		fmt.Printf("\n❌ COMPTIME DAG ERROR:\n  - %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ DAG Topological Sort Successful.")
+
+	// 4. The Type Executor
+	for _, decl := range sortedDecls {
+		evaluator.Evaluate(decl, globalScope)
+	}
+
+	// 5. Diagnostics
+	if len(evaluator.Errors) > 0 {
+		fmt.Println("\n❌ SEMANTIC ERRORS:")
+		for _, err := range evaluator.Errors {
+			fmt.Printf("  - %s\n", err)
+		}
 	} else {
-		fmt.Println("\n✅ PARSING SUCCESSFUL.")
+		fmt.Println("\n✅ SEMANTIC ANALYSIS COMPLETE.")
 	}
 
-	fmt.Println("\n🌳 ABSTRACT SYNTAX TREE:")
-	if program != nil {
-		for _, decl := range program.Declarations {
-			printNode(decl, "", true, "")
-			fmt.Println()
-		}
-	}
-}
+	// 6. Inspect the Boolean Engine's Memory Layouts
+	fmt.Println("\n🏊 THE TYPE POOL (Computed Memory Layouts):")
+	for _, t := range pool.Types {
+		fmt.Printf("[%d] %s (Size: %d bits)\n", t.ID, t.Name, t.TrueSizeBits)
 
-type astChild struct {
-	name string
-	val  any
-}
-
-// printNode recursively reflects over AST structs and prints them nicely
-func printNode(node any, prefix string, isLast bool, name string) {
-	if node == nil {
-		return
-	}
-
-	// Determine the branch character
-	branch := "├── "
-	if isLast {
-		branch = "└── "
-	}
-
-	// Extract value to inspect via reflection
-	v := reflect.ValueOf(node)
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return
-		}
-		v = v.Elem()
-	}
-
-	nodeType := v.Type().Name()
-	display := nodeType
-	if name != "" {
-		display = name + ": " + nodeType
-	}
-
-	// Extract Literal value if it's a leaf node to make output cleaner
-	if v.Kind() == reflect.Struct {
-		if valField := v.FieldByName("Value"); valField.IsValid() && valField.Kind() == reflect.String {
-			display += fmt.Sprintf(" (%s)", valField.String())
-		} else if opField := v.FieldByName("Operator"); opField.IsValid() && opField.Kind() == reflect.String {
-			display += fmt.Sprintf(" [ %s ]", opField.String())
-		}
-	}
-
-	fmt.Printf("%s%s%s\n", prefix, branch, display)
-
-	// Update prefix for children
-	childPrefix := prefix
-	if isLast {
-		childPrefix += "    "
-	} else {
-		childPrefix += "│   "
-	}
-
-	if v.Kind() != reflect.Struct {
-		return
-	}
-
-	// Collect valid children using our new clean struct
-	var children []astChild
-
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Type().Field(i)
-		// Skip unexported fields or Token/Span metadata to reduce noise
-		if !field.IsExported() || field.Name == "Token" || strings.Contains(field.Name, "Span") {
-			continue
-		}
-
-		fieldVal := v.Field(i)
-
-		// Handle slices (like Statements, Fields, Declarations)
-		if fieldVal.Kind() == reflect.Slice {
-			for j := 0; j < fieldVal.Len(); j++ {
-				children = append(children, astChild{
-					name: fmt.Sprintf("%s[%d]", field.Name, j),
-					val:  fieldVal.Index(j).Interface(),
-				})
+		if t.Mask&sema.MaskIsFunction != 0 {
+			// Map parameter IDs to Names
+			paramNames := make([]string, len(t.FuncParams))
+			for i, pID := range t.FuncParams {
+				paramNames[i] = pool.Types[pID].Name
 			}
-		} else if fieldVal.Kind() == reflect.Ptr || fieldVal.Kind() == reflect.Interface {
-			if !fieldVal.IsNil() {
-				children = append(children, astChild{
-					name: field.Name,
-					val:  fieldVal.Interface(),
-				})
-			}
-		}
-	}
+			retName := pool.Types[t.FuncReturn].Name
 
-	// Print children
-	for i, child := range children {
-		printNode(child.val, childPrefix, i == len(children)-1, child.name)
+			fmt.Printf("    Params: [%s] -> Ret: %s\n", strings.Join(paramNames, " "), retName)
+
+		} else if t.Mask&sema.MaskIsStruct != 0 && len(t.Fields) > 0 {
+			// Map field IDs to Names
+			fieldNames := []string{}
+			for fName, fID := range t.Fields {
+				fieldNames = append(fieldNames, fmt.Sprintf("%s:%s", fName, pool.Types[fID].Name))
+			}
+			fmt.Printf("    Fields: map[%s]\n", strings.Join(fieldNames, " "))
+		}
 	}
 }

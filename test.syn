@@ -1,24 +1,4 @@
-// test.syn - Synovium Unified AST Master Test
-
-// 1. Comptime Constants
-THRESHOLD : i32 := 100;
-
-// 2. Data Structures
-struct Manager {
-    id : i32,
-    active : bln,
-}
-
-struct Motor {
-    rpm : f64,
-    id : i32,
-}
-
-struct Vec3 {
-    x : f64,
-    y : f64,
-    z : f64,
-}
+// test.syn - Synovium Semantic Engine Master Test
 
 struct Mat3 {
     r1 : Vec3,
@@ -26,87 +6,46 @@ struct Mat3 {
     r3 : Vec3,
 }
 
-// 3. Enums
-enum Status {
-    Idle,
-    Running(f64),
-    Error(str),
+// 1. Struct Memory Layout
+struct Vec3 {
+    x : f64,
+    y : f64,
+    z : f64,
 }
 
-// 4. Impl Blocks & Methods
-impl Vec3 {
-    fnc new(x : f64, y : f64, z : f64) := Vec3 {
-        ret Vec3 {
-            .x = x,
-            .y = y,
-            .z = z
-        };
-    }
-
-    fnc magnitude_sq(self : *Self) = f64 {
-        self.x * self.x + self.y * self.y + self.z * self.z
-    }
+// 2. Generic Comptime Template!
+// Because 'T' is marked as a `type`, the engine defers checking this 
+// until it is actually called with a concrete type below.
+fnc identity(T : type, val : T) = T {
+    ret val;
 }
 
-// 5. Higher-Order Functions (Function Types as Parameters)
-fnc apply_transform(val : i32, transform : fnc(i32) = i32) = i32 {
-    ret transform(val);
-}
+// 3. Main Execution Block
+fnc main() {
+    // A. Mutability and Primitive Promotion (i32 implicitly promotes to f64)
+    base : f64 ~= 10.5;
+    modifier : i32 = 2;
+    base += modifier; 
 
-// 6. Main Execution Block
-fnc main() = i32 {
-    // A. Simple Anonymous Lambda Assignment
-    double : fnc(i32) = i32 = fnc(x : i32) = i32 {
-        ret x * 2;
+    // B. Struct Initialization (Validates fields exist and types match)
+    v1 : Vec3 = Vec3 {
+        .x = base,
+        .y = 20.0,
+        .z = 30.0
     };
 
-    // B. Nested Named Function (Closure)
-    next : fnc(type, *Manager, i32) = i32 := fnc next_motor(T : type, m : *Manager, val : i32) = i32 {
-        // Test internal mutation and compound assignment
-        temp : i32 ~= val;
-        temp += 10;
-        ret temp;
+    // C. Field Access & Generic Monomorphization!
+    // We pass the type 'f64' and the field 'v1.y'.
+    // The engine clones 'identity', substitutes T for f64, and type-checks it.
+    y_val : f64 = identity(f64, v1.y);
+    z_n : i32 = 7 + 9;
+    z_val : i32 = identity(i32, z_n);
+
+    // D. Block Bubbling & Strict Branch Verification
+    final : f64 = if true {
+        temp : f64 = y_val * 2.0;
+        temp // Bubbles out of the block!
+    } else {
+        0.0  // Else branch strictly matches the If branch type (f64)
     };
-
-    // C. Array of Function Pointers
-    // (Must be initialized per Synovium's strict EBNF!)
-    handlers : [fnc(i32) = str; 5] = get_handlers();
-
-    // D. Struct Initialization
-    mgr : Manager = Manager {
-        .id = 42,
-        .active = true
-    };
-
-    // E. Calling nested function with comptime type parameter
-    n_motor : i32 ~= next(Motor, &mgr, 24);
-
-    // F. Looping, Yielding, and Higher-Order execution
-    results : [i32; :] = loop (i : i32 = 0...10) {
-        if i % 2 == 0 {
-            n_motor += 1;
-            yld apply_transform(n_motor, double);
-        } elif i == 9 {
-            brk;
-        } else {
-            yld i;
-        }
-    };
-
-    // G. Object Methods and Bubbling
-    v1 : Vec3 = Vec3.new(1.0, 2.0, 3.0);
-    mag : f64 = v1.magnitude_sq()?;
-    
-    // H. Pattern Matching and Casting
-    stat : Status = Status.Running(mag);
-    msg : str = match stat {
-        Status.Idle -> { "System is idle" },
-        Status.Running(speed) -> { 
-            metric : i32 = speed as i32;
-            "System is running" 
-        },
-        Status.Error(err) -> { err },
-    };
-
-    ret n_motor;
 }
