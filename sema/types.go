@@ -42,6 +42,12 @@ type UniversalType struct {
 	// For Structs/Modules: Field name -> TypeID
 	Fields map[string]TypeID
 
+	// For Enums: Variant Name -> Slice of Payload TypeIDs
+	Variants map[string][]TypeID
+
+	// For Impl Blocks: Method Name -> Function TypeID
+	Methods map[string]TypeID
+
 	// For Arrays/Pointers/References: What is the underlying type?
 	BaseType TypeID
 	Capacity uint64 // For fixed arrays

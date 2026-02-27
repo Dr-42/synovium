@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strconv"
 	"synovium/ast"
 	"synovium/lexer"
 )
@@ -14,7 +15,15 @@ func (p *Parser) parseIdentifier() ast.Expr {
 }
 
 func (p *Parser) parseIntLiteral() ast.Expr {
-	return &ast.IntLiteral{Token: p.curToken}
+	lit := &ast.IntLiteral{Token: p.curToken}
+
+	// Actually parse the string into a binary integer so the Semantic Phase can read it!
+	val, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
+	if err == nil {
+		lit.Value = val
+	}
+
+	return lit
 }
 
 func (p *Parser) parsePrefixExpression() ast.Expr {

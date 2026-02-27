@@ -1,51 +1,62 @@
-// test.syn - Synovium Semantic Engine Master Test
+// test.syn - Synovium Phase 3 100% Mastery
 
-struct Mat3 {
-    r1 : Vec3,
-    r2 : Vec3,
-    r3 : Vec3,
-}
-
-// 1. Struct Memory Layout
+// 1. Data Structures & Enums (Tagged Unions)
 struct Vec3 {
     x : f64,
     y : f64,
     z : f64,
 }
 
-// 2. Generic Comptime Template!
-// Because 'T' is marked as a `type`, the engine defers checking this 
-// until it is actually called with a concrete type below.
+enum Status {
+    Idle,
+    Running(f64),
+    Error(str),
+}
+
+// 2. Impl Blocks & Methods
+impl Vec3 {
+    // Note: 'Self' is dynamically injected into the scope by evaluateImplDecl!
+    fnc magnitude_sq(self : *Self) = f64 {
+        ret self.x * self.x + self.y * self.y + self.z * self.z;
+    }
+}
+
+// 3. Generic Monomorphization
 fnc identity(T : type, val : T) = T {
     ret val;
 }
 
-// 3. Main Execution Block
-fnc main() {
-    // A. Mutability and Primitive Promotion (i32 implicitly promotes to f64)
-    base : f64 ~= 10.5;
-    modifier : i32 = 2;
-    base += modifier; 
+// 4. Main Execution
+fnc main() = void {
+    // A. Pattern Matching & Tagged Unions
+    stat : Status = Status.Running(100.5);
+    
+    speed_check : f64 = match stat {
+        Status.Idle -> { 0.0 },
+        Status.Running(speed) -> { speed }, // Binds 'speed' as f64
+        Status.Error(err) -> { -1.0 },
+    };
 
-    // B. Struct Initialization (Validates fields exist and types match)
+    // B. Struct Initialization & Pointer Generation
     v1 : Vec3 = Vec3 {
-        .x = base,
+        .x = speed_check,
         .y = 20.0,
         .z = 30.0
     };
-
-    // C. Field Access & Generic Monomorphization!
-    // We pass the type 'f64' and the field 'v1.y'.
-    // The engine clones 'identity', substitutes T for f64, and type-checks it.
-    y_val : f64 = identity(f64, v1.y);
-    z_n : i32 = 7 + 9;
-    z_val : i32 = identity(i32, z_n);
-
-    // D. Block Bubbling & Strict Branch Verification
-    final : f64 = if true {
-        temp : f64 = y_val * 2.0;
-        temp // Bubbles out of the block!
-    } else {
-        0.0  // Else branch strictly matches the If branch type (f64)
-    };
+    
+    v_ptr : *Vec3 = &v1;
+    
+    // C. Method Call & Dynamic Resolution
+    // Resolves magnitude_sq from the Vec3 Impl block!
+    mag : f64 = v_ptr.magnitude_sq(); 
+    
+    // D. Loops and Ranges
+    counter : i32 ~= 0;
+    loop (i : i32 = 0...10) {
+        counter += 1;
+    }
+    
+    // E. Generics and Explicit Casts
+    final_val : i32 = counter as i32;
+    verified : i32 = identity(i32, final_val);
 }

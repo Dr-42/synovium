@@ -2,24 +2,19 @@ package sema
 
 import "synovium/ast"
 
-// evaluateStructDecl computes the memory layout and registers the Struct in the TypePool.
 func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeID {
 	fields := make(map[string]TypeID)
 	var totalSize uint64 = 0
 
-	// 1. Resolve all field types
 	for _, field := range node.Fields {
 		fieldTypeID := e.resolveTypeSignature(field.Type, scope)
 		if fieldTypeID == 0 {
-			return 0 // Cascade error
+			return 0
 		}
 		fields[field.Name.Value] = fieldTypeID
-
-		// Add to total memory footprint
 		totalSize += e.Pool.Types[fieldTypeID].TrueSizeBits
 	}
 
-	// 2. Allocate the UniversalType
 	structType := UniversalType{
 		ID:            TypeID(len(e.Pool.Types)),
 		Mask:          MaskIsStruct,
@@ -31,18 +26,15 @@ func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeI
 
 	e.Pool.Types = append(e.Pool.Types, structType)
 
-	// 3. Patch the deferred symbol in the scope from Pass 1
 	if sym, exists := scope.Resolve(node.Name.Value); exists {
 		sym.TypeID = structType.ID
 		sym.IsResolved = true
 	}
 
-	return structType.ID // Evaluating a declaration yields its own TypeID (the Meta-Type)
+	return structType.ID
 }
 
-// evaluateStructInit verifies that Vec3 { .x = 1.0, .y = 2.0, .z = 3.0 } is perfectly memory-safe.
 func (e *Evaluator) evaluateStructInit(node *ast.StructInitExpr, scope *Scope) TypeID {
-	// 1. Resolve the target struct type
 	structSym, exists := scope.Resolve(node.Name.Value)
 	if !exists || !structSym.IsResolved {
 		return e.error(node.Name.Span(), "undeclared or unresolved struct: "+node.Name.Value)
@@ -53,7 +45,6 @@ func (e *Evaluator) evaluateStructInit(node *ast.StructInitExpr, scope *Scope) T
 		return e.error(node.Name.Span(), "cannot initialize a non-struct type")
 	}
 
-	// 2. Track which fields were provided to ensure exhaustive initialization
 	initializedFields := make(map[string]bool)
 
 	for _, initField := range node.Fields {
@@ -70,7 +61,6 @@ func (e *Evaluator) evaluateStructInit(node *ast.StructInitExpr, scope *Scope) T
 		initializedFields[initField.Name.Value] = true
 	}
 
-	// 3. Verify all fields were initialized (Synovium demands strict memory initialization)
 	if len(initializedFields) != len(targetType.Fields) {
 		return e.error(node.Span(), "missing fields in struct initialization for '"+targetType.Name+"'")
 	}
@@ -78,7 +68,6 @@ func (e *Evaluator) evaluateStructInit(node *ast.StructInitExpr, scope *Scope) T
 	return targetType.ID
 }
 
-// evaluateFieldAccess handles `left.right` (e.g., `v1.x`)
 func (e *Evaluator) evaluateFieldAccess(node *ast.FieldAccessExpr, scope *Scope) TypeID {
 	leftID := e.Evaluate(node.Left, scope)
 	if leftID == 0 {
@@ -87,16 +76,44 @@ func (e *Evaluator) evaluateFieldAccess(node *ast.FieldAccessExpr, scope *Scope)
 
 	leftType := e.Pool.Types[leftID]
 
-	// Ensure the left side is actually a struct (or a module acting as a struct!)
+	// --- SYNTACTIC SUGAR: AUTO-DEREFERENCE ---
+	// If it's a pointer, implicitly unwrap it to its base struct/enum type
+	if (leftType.Mask & MaskIsPointer) != 0 {
+		leftType = e.Pool.Types[leftType.BaseType]
+	}
+
 	if (leftType.Mask & MaskIsStruct) == 0 {
 		return e.error(node.Left.Span(), "cannot access field of a non-struct type")
 	}
 
-	// Lookup the field
-	fieldTypeID, exists := leftType.Fields[node.Field.Value]
-	if !exists {
-		return e.error(node.Field.Span(), "type '"+leftType.Name+"' has no field named '"+node.Field.Value+"'")
+	// 1. Lookup Struct Field
+	if fieldTypeID, exists := leftType.Fields[node.Field.Value]; exists {
+		return fieldTypeID
 	}
 
-	return fieldTypeID
+	// 2. Lookup Impl Method
+	if methodTypeID, exists := leftType.Methods[node.Field.Value]; exists {
+		return methodTypeID
+	}
+
+	// 3. Lookup Enum Variant (Dynamic Constructor Forging)
+	if payloadTypes, isVariant := leftType.Variants[node.Field.Value]; isVariant {
+		// If the variant has no payload (e.g., Status.Idle), it evaluates directly to the Enum itself
+		if len(payloadTypes) == 0 {
+			return leftType.ID
+		}
+
+		// If it has a payload, forge a function signature that takes the payloads and returns the Enum
+		constructorType := UniversalType{
+			ID:         TypeID(len(e.Pool.Types)),
+			Mask:       MaskIsFunction,
+			Name:       leftType.Name + "::" + node.Field.Value,
+			FuncParams: payloadTypes,
+			FuncReturn: leftType.ID,
+		}
+		e.Pool.Types = append(e.Pool.Types, constructorType)
+		return constructorType.ID
+	}
+
+	return e.error(node.Field.Span(), "type '"+leftType.Name+"' has no field, method, or variant named '"+node.Field.Value+"'")
 }

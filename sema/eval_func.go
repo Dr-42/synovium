@@ -103,7 +103,43 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 		return e.error(node.Function.Span(), "attempted to call a non-function type")
 	}
 
-	if len(node.Arguments) != len(funcType.FuncParams) {
+	// --- METHOD CALL INJECTION (Syntactic Sugar) ---
+	isMethodCall := false
+	var methodSelfArg TypeID = 0
+
+	// If we are calling something like `v_ptr.magnitude_sq()`
+	if fieldAccess, ok := node.Function.(*ast.FieldAccessExpr); ok {
+		leftObjID := e.Evaluate(fieldAccess.Left, scope)
+		actualObjType := e.Pool.Types[leftObjID]
+
+		if (actualObjType.Mask & MaskIsPointer) != 0 {
+			actualObjType = e.Pool.Types[actualObjType.BaseType]
+		}
+
+		// Check if it's genuinely a method attached to the struct
+		if _, isMethod := actualObjType.Methods[fieldAccess.Field.Value]; isMethod {
+			isMethodCall = true
+			methodSelfArg = leftObjID
+
+			// Auto-Reference: If method needs *Vec3 but we called it on Vec3
+			expectedSelfType := funcType.FuncParams[0]
+			if (e.Pool.Types[expectedSelfType].Mask&MaskIsPointer) != 0 && (e.Pool.Types[methodSelfArg].Mask&MaskIsPointer) == 0 {
+				methodSelfArg = e.getOrCreatePointerType(methodSelfArg)
+			}
+			// Auto-Dereference: If method needs Vec3 but we called it on *Vec3
+			if (e.Pool.Types[expectedSelfType].Mask&MaskIsPointer) == 0 && (e.Pool.Types[methodSelfArg].Mask&MaskIsPointer) != 0 {
+				methodSelfArg = e.Pool.Types[methodSelfArg].BaseType
+			}
+		}
+	}
+
+	expectedArgs := len(funcType.FuncParams)
+	actualArgs := len(node.Arguments)
+	if isMethodCall {
+		actualArgs++
+	}
+
+	if actualArgs != expectedArgs {
 		return e.error(node.Span(), "incorrect number of arguments")
 	}
 
@@ -124,8 +160,6 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 		// 1. Extract and bind the generic type arguments FIRST
 		for i, param := range decl.Parameters {
 			if funcType.FuncParams[i] == e.CachedPrimitives["type"] {
-				// We expect the argument to be a type (e.g. `f64`).
-				// Evaluating `f64` returns its TypeID (12). We bind T to 12!
 				concreteTypeID := e.Evaluate(node.Arguments[i], scope)
 				if concreteTypeID == 0 {
 					return 0
@@ -140,7 +174,6 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			if funcType.FuncParams[i] == e.CachedPrimitives["type"] {
 				concreteParams[i] = e.CachedPrimitives["type"]
 			} else {
-				// val: T now resolves to f64 instead of T_template!
 				concreteParams[i] = e.resolveTypeSignature(param.Type, instScope)
 			}
 		}
@@ -156,14 +189,12 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			if argType == 0 {
 				return 0
 			}
-
 			if concreteParams[i] == e.CachedPrimitives["type"] {
-				continue // Already handled
+				continue
 			}
 			if argType != concreteParams[i] {
 				return e.error(arg.Span(), "argument type mismatch in generic instantiation")
 			}
-			// Bind the runtime values for the body to access
 			instScope.Define(decl.Parameters[i].Name.Value, argType, false, decl.Parameters[i].Name)
 		}
 
@@ -177,9 +208,7 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			return e.error(decl.Body.Span(), "generic function body bubbles a type different from its instantiated signature")
 		}
 
-		// We generate a unique name using the function name and the concrete return TypeID
 		specializedName := fmt.Sprintf("%s_inst_%d", decl.Name.Value, concreteRet)
-
 		specializedFunc := UniversalType{
 			ID:         TypeID(len(e.Pool.Types)),
 			Mask:       MaskIsFunction,
@@ -193,12 +222,21 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 	}
 
 	// --- STANDARD NON-GENERIC CALL ROUTINE ---
+	argOffset := 0
+	if isMethodCall {
+		if methodSelfArg != funcType.FuncParams[0] {
+			return e.error(node.Function.Span(), "implicit 'self' parameter type mismatch")
+		}
+		argOffset = 1
+	}
+
 	for i, arg := range node.Arguments {
 		argType := e.Evaluate(arg, scope)
 		if argType == 0 {
 			return 0
 		}
-		if argType != funcType.FuncParams[i] {
+
+		if argType != funcType.FuncParams[i+argOffset] {
 			return e.error(arg.Span(), "argument type mismatch")
 		}
 	}

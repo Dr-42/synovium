@@ -74,7 +74,7 @@ func (e *Evaluator) Evaluate(node ast.Node, scope *Scope) TypeID {
 		lhsType := e.resolveTypeSignature(n.Type, scope)
 
 		// 3. Type Check!
-		if lhsType != 0 && lhsType != rhsType {
+		if lhsType != 0 && !e.typesMatch(lhsType, rhsType) {
 			// In the future, we can check for valid implicit casts here
 			return e.error(n.Span(), "type mismatch in variable declaration")
 		}
@@ -124,6 +124,24 @@ func (e *Evaluator) Evaluate(node ast.Node, scope *Scope) TypeID {
 		return e.evaluateFunctionDecl(n, scope)
 	case *ast.CallExpr:
 		return e.evaluateCallExpr(n, scope)
+
+	// --- 8. EXPRESSIONS & OPERATORS ---
+	case *ast.PrefixExpr:
+		return e.evaluatePrefix(n, scope)
+	case *ast.IndexExpr:
+		return e.evaluateIndexExpr(n, scope)
+	case *ast.CastExpr:
+		return e.evaluateCastExpr(n, scope)
+	case *ast.BubbleExpr:
+		return e.evaluateBubbleExpr(n, scope)
+
+	// --- 9. ENUMS, IMPLS, & MATCH ---
+	case *ast.EnumDecl:
+		return e.evaluateEnumDecl(n, scope)
+	case *ast.ImplDecl:
+		return e.evaluateImplDecl(n, scope)
+	case *ast.MatchExpr:
+		return e.evaluateMatchExpr(n, scope)
 	}
 
 	return e.error(node.Span(), fmt.Sprintf("unsupported AST node for evaluation: %T", node))
@@ -154,9 +172,17 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 		}
 
 		// If it's a strict reassignment, types must match
-		if node.Operator == "=" && leftID != rightID {
+		if node.Operator == "=" && !e.typesMatch(leftID, rightID) {
 			return e.error(node.Span(), "type mismatch in assignment")
 		}
+	}
+
+	// --- RANGE OPERATOR (0...10) ---
+	if node.Operator == "..." {
+		if (e.Pool.Types[leftID].Mask&MaskIsNumeric) == 0 || (e.Pool.Types[rightID].Mask&MaskIsNumeric) == 0 {
+			return e.error(node.Span(), "range bounds must be numeric")
+		}
+		return leftID // Yields the type being iterated
 	}
 
 	// --- ARITHMETIC PRIMITIVE PROMOTION ---
@@ -189,4 +215,30 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 
 func (e *Evaluator) routeToDispatchTable(op string, left, right TypeID, span lexer.Span) TypeID {
 	return e.error(span, "operator overloading / dispatch tables not yet implemented")
+}
+
+// typesMatch performs structural duck-typing for complex types that don't share an ID
+func (e *Evaluator) typesMatch(expected, actual TypeID) bool {
+	if expected == actual {
+		return true // Perfect Hash Cons match
+	}
+
+	expType := e.Pool.Types[expected]
+	actType := e.Pool.Types[actual]
+
+	// Function Signature Matching
+	// A <lambda> can securely be assigned to a fnc_ptr if their signatures match perfectly.
+	if (expType.Mask&MaskIsFunction) != 0 && (actType.Mask&MaskIsFunction) != 0 {
+		if len(expType.FuncParams) != len(actType.FuncParams) {
+			return false
+		}
+		for i, p := range expType.FuncParams {
+			if p != actType.FuncParams[i] {
+				return false
+			}
+		}
+		return expType.FuncReturn == actType.FuncReturn
+	}
+
+	return false
 }
