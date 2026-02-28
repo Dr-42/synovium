@@ -2,10 +2,9 @@ package sema
 
 import "synovium/ast"
 
-// InjectBuiltins initializes the hardware axioms and fundamental types.
 func (e *Evaluator) InjectBuiltins(globalScope *Scope) {
 	// Helper to forge a primitive type
-	forge := func(name string, mask TypeMask, sizeBits uint64, llvmName string) TypeID {
+	forge := func(name string, mask TypeMask, sizeBits uint64, llvmName string, userVisible bool) TypeID {
 		t := UniversalType{
 			ID:            TypeID(len(e.Pool.Types)),
 			Mask:          mask,
@@ -18,40 +17,40 @@ func (e *Evaluator) InjectBuiltins(globalScope *Scope) {
 		e.Pool.Types = append(e.Pool.Types, t)
 		e.CachedPrimitives[name] = t.ID
 
-		// Inject the type into the global scope as an immutable compile-time constant
-		globalScope.Define(name, t.ID, false, nil)
+		if userVisible {
+			// Inject the type into the global scope as an immutable compile-time constant
+			globalScope.Define(name, t.ID, false, nil)
+		}
 		return t.ID
 	}
 
+	// 5. INTERNAL ENGINE VOID (Hidden from the user!)
+	forge("void", 0, 0, "void", false)
+
 	// 1. The Meta-Type (The type of `type` itself)
-	forge("type", MaskIsMeta, 0, "void")
+	forge("type", MaskIsMeta, 0, "void", true)
 
-	// 2. Booleans
-	forge("bln", 0, 8, "i1")
+	// 2. Booleans & Chars
+	forge("bln", 0, 8, "i1", true)
+	forge("chr", MaskIsNumeric, 8, "i8", true)
 
-	// 3. Chars
-	forge("chr", MaskIsNumeric, 8, "i8")
+	// 3. Integers
+	forge("i8", MaskIsNumeric|MaskIsSigned|(1<<RankShift), 8, "i8", true)
+	forge("i16", MaskIsNumeric|MaskIsSigned|(2<<RankShift), 16, "i16", true)
+	forge("i32", MaskIsNumeric|MaskIsSigned|(3<<RankShift), 32, "i32", true)
+	forge("i64", MaskIsNumeric|MaskIsSigned|(4<<RankShift), 64, "i64", true)
 
-	// 4. Integers (Ranked 1 to 4)
-	forge("i8", MaskIsNumeric|MaskIsSigned|(1<<RankShift), 8, "i8")
-	forge("i16", MaskIsNumeric|MaskIsSigned|(2<<RankShift), 16, "i16")
-	forge("i32", MaskIsNumeric|MaskIsSigned|(3<<RankShift), 32, "i32")
-	forge("i64", MaskIsNumeric|MaskIsSigned|(4<<RankShift), 64, "i64")
+	forge("u8", MaskIsNumeric|(1<<RankShift), 8, "i8", true)
+	forge("u16", MaskIsNumeric|(2<<RankShift), 16, "i16", true)
+	forge("u32", MaskIsNumeric|(3<<RankShift), 32, "i32", true)
+	forge("u64", MaskIsNumeric|(4<<RankShift), 64, "i64", true)
 
-	forge("u8", MaskIsNumeric|(1<<RankShift), 8, "i8")
-	forge("u16", MaskIsNumeric|(2<<RankShift), 16, "i16")
-	forge("u32", MaskIsNumeric|(3<<RankShift), 32, "i32")
-	forge("u64", MaskIsNumeric|(4<<RankShift), 64, "i64")
+	forge("f32", MaskIsNumeric|MaskIsFloat|MaskIsSigned|(3<<RankShift), 32, "float", true)
+	forge("f64", MaskIsNumeric|MaskIsFloat|MaskIsSigned|(4<<RankShift), 64, "double", true)
 
-	// 5. Floats (Ranked 3 to 4, with the Float bit flagged)
-	forge("f32", MaskIsNumeric|MaskIsFloat|MaskIsSigned|(3<<RankShift), 32, "float")
-	forge("f64", MaskIsNumeric|MaskIsFloat|MaskIsSigned|(4<<RankShift), 64, "double")
+	// 4. Strings
+	forge("str", MaskIsStruct, 128, "{ i64, i8* }", true)
 
-	// 6. Strings (Represented natively as a fat pointer: length + pointer to u8)
-	forge("str", MaskIsStruct, 128, "{ i64, i8* }")
-
-	// 7. Void (For statements and empty blocks)
-	forge("void", 0, 0, "void")
 }
 
 // In sema/builtin.go

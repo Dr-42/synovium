@@ -1,6 +1,7 @@
 package sema
 
 import (
+	"fmt"
 	"strings"
 	"synovium/ast"
 )
@@ -33,11 +34,17 @@ func (e *Evaluator) evaluateEnumDecl(node *ast.EnumDecl, scope *Scope) TypeID {
 		}
 	}
 
+	// --- THE FIX: Handle Anonymous Enums ---
+	name := fmt.Sprintf("anon_enum_%d", len(e.Pool.Types))
+	if node.Name != nil {
+		name = node.Name.Value
+	}
+
 	// 2. Allocate the UniversalType
 	enumType := UniversalType{
 		ID:            TypeID(len(e.Pool.Types)),
-		Mask:          MaskIsStruct, // Enums behave like structs for memory routing
-		Name:          node.Name.Value,
+		Mask:          MaskIsStruct,       // Enums behave like structs for memory routing
+		Name:          name,               // Use the real name or the anonymous ID
 		TrueSizeBits:  8 + maxPayloadSize, // 8 bits for the variant tag
 		IsFundamental: false,
 		Variants:      variants,
@@ -46,10 +53,12 @@ func (e *Evaluator) evaluateEnumDecl(node *ast.EnumDecl, scope *Scope) TypeID {
 
 	e.Pool.Types = append(e.Pool.Types, enumType)
 
-	// 3. Patch the deferred symbol in the scope from Pass 1
-	if sym, exists := scope.Resolve(node.Name.Value); exists {
-		sym.TypeID = enumType.ID
-		sym.IsResolved = true
+	// 3. Only patch the deferred symbol in the scope if it had a name!
+	if node.Name != nil {
+		if sym, exists := scope.Resolve(node.Name.Value); exists {
+			sym.TypeID = enumType.ID
+			sym.IsResolved = true
+		}
 	}
 
 	return enumType.ID

@@ -1,6 +1,9 @@
 package sema
 
-import "synovium/ast"
+import (
+	"fmt"
+	"synovium/ast"
+)
 
 func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeID {
 	fields := make(map[string]TypeID)
@@ -15,10 +18,16 @@ func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeI
 		totalSize += e.Pool.Types[fieldTypeID].TrueSizeBits
 	}
 
+	// 1. Handle Anonymous Naming
+	name := fmt.Sprintf("anon_struct_%d", len(e.Pool.Types))
+	if node.Name != nil {
+		name = node.Name.Value
+	}
+
 	structType := UniversalType{
 		ID:            TypeID(len(e.Pool.Types)),
 		Mask:          MaskIsStruct,
-		Name:          node.Name.Value,
+		Name:          name, // Use the real name or the anonymous ID
 		TrueSizeBits:  totalSize,
 		IsFundamental: false,
 		Fields:        fields,
@@ -26,9 +35,12 @@ func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeI
 
 	e.Pool.Types = append(e.Pool.Types, structType)
 
-	if sym, exists := scope.Resolve(node.Name.Value); exists {
-		sym.TypeID = structType.ID
-		sym.IsResolved = true
+	// 2. Only patch the scope if it actually had a name!
+	if node.Name != nil {
+		if sym, exists := scope.Resolve(node.Name.Value); exists {
+			sym.TypeID = structType.ID
+			sym.IsResolved = true
+		}
 	}
 
 	return structType.ID

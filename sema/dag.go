@@ -145,33 +145,54 @@ func (d *DAG) extractDependencies(node ast.Node) []string {
 
 		switch v := n.(type) {
 		case *ast.Identifier:
+			if v == nil {
+				return
+			}
 			deps = append(deps, v.Value)
 		case *ast.NamedType:
+			if v == nil {
+				return
+			}
 			// "std.math.Vec3" maps to a dependency on "std"
 			baseName := strings.Split(v.Name, ".")[0]
 			deps = append(deps, baseName)
 
 		// Unpack Declarations
 		case *ast.VariableDecl:
+			if v == nil {
+				return
+			}
 			visit(v.Type)
 			visit(v.Value)
 		case *ast.FunctionDecl:
+			if v == nil {
+				return
+			}
 			for _, p := range v.Parameters {
 				visit(p.Type)
 			}
 			visit(v.ReturnType)
 			visit(v.Body)
 		case *ast.StructDecl:
+			if v == nil {
+				return
+			}
 			for _, f := range v.Fields {
 				visit(f.Type)
 			}
 		case *ast.EnumDecl:
+			if v == nil {
+				return
+			}
 			for _, variant := range v.Variants {
 				for _, t := range variant.Types {
 					visit(t)
 				}
 			}
 		case *ast.ImplDecl:
+			if v == nil {
+				return
+			}
 			visit(v.Target)
 			for _, m := range v.Methods {
 				visit(m)
@@ -179,32 +200,59 @@ func (d *DAG) extractDependencies(node ast.Node) []string {
 
 		// Unpack Expressions
 		case *ast.Block:
+			if v == nil {
+				return
+			}
 			for _, s := range v.Statements {
 				visit(s)
 			}
 			visit(v.Value)
 		case *ast.ExprStmt:
+			if v == nil {
+				return
+			}
 			visit(v.Value)
 		case *ast.ReturnStmt:
+			if v == nil {
+				return
+			}
 			visit(v.Value)
 		case *ast.YieldStmt:
+			if v == nil {
+				return
+			}
 			visit(v.Value)
 		case *ast.InfixExpr:
+			if v == nil {
+				return
+			}
 			visit(v.Left)
 			visit(v.Right)
 		case *ast.PrefixExpr:
+			if v == nil {
+				return
+			}
 			visit(v.Right)
 		case *ast.CallExpr:
+			if v == nil {
+				return
+			}
 			visit(v.Function)
 			for _, a := range v.Arguments {
 				visit(a)
 			}
 		case *ast.StructInitExpr:
+			if v == nil {
+				return
+			}
 			visit(v.Name)
 			for _, f := range v.Fields {
 				visit(f.Value)
 			}
 		case *ast.IfExpr:
+			if v == nil {
+				return
+			}
 			visit(v.Condition)
 			visit(v.Body)
 			for _, c := range v.ElifConds {
@@ -213,24 +261,42 @@ func (d *DAG) extractDependencies(node ast.Node) []string {
 			for _, b := range v.ElifBodies {
 				visit(b)
 			}
-			visit(v.ElseBody)
+			visit(v.ElseBody) // The typed-nil trap is now neutralized!
 		case *ast.LoopExpr:
+			if v == nil {
+				return
+			}
 			visit(v.Condition)
 			visit(v.Body)
 		case *ast.MatchExpr:
+			if v == nil {
+				return
+			}
 			visit(v.Value)
 			for _, a := range v.Arms {
 				visit(a.Pattern)
 				visit(a.Body)
 			}
 		case *ast.ArrayType:
+			if v == nil {
+				return
+			}
 			visit(v.Base)
 			visit(v.Size)
 		case *ast.PointerType:
+			if v == nil {
+				return
+			}
 			visit(v.Base)
 		case *ast.ReferenceType:
+			if v == nil {
+				return
+			}
 			visit(v.Base)
 		case *ast.FunctionType:
+			if v == nil {
+				return
+			}
 			for _, param := range v.Parameters {
 				visit(param)
 			}

@@ -10,6 +10,7 @@ type Evaluator struct {
 	Pool               *TypePool
 	Errors             []string
 	CachedPrimitives   map[string]TypeID
+	ComptimeCache      map[string]TypeID
 	LoopDepth          int
 	ExpectedReturnType TypeID
 	ExpectedYieldType  TypeID
@@ -20,6 +21,7 @@ func NewEvaluator(pool *TypePool) *Evaluator {
 		Pool:             pool,
 		Errors:           make([]string, 0),
 		CachedPrimitives: make(map[string]TypeID),
+		ComptimeCache:    make(map[string]TypeID),
 	}
 }
 
@@ -153,17 +155,28 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 	// --- ASSIGNMENT & MUTABILITY CHECK ---
 	isAssignment := node.Operator == "=" || node.Operator == "~=" || node.Operator == "+=" || node.Operator == "-=" || node.Operator == "*=" || node.Operator == "/=" || node.Operator == "%="
 	if isAssignment {
-		if ident, ok := node.Left.(*ast.Identifier); ok {
-			sym, _ := scope.Resolve(ident.Value)
+		switch leftNode := node.Left.(type) {
+		case *ast.Identifier:
+			sym, _ := scope.Resolve(leftNode.Value)
 			if sym != nil && !sym.IsMutable {
-				return e.error(ident.Span(), fmt.Sprintf("cannot mutate immutable variable '%s'", ident.Value))
+				return e.error(leftNode.Span(), fmt.Sprintf("cannot mutate immutable variable '%s'", leftNode.Value))
 			}
-		} else {
+		case *ast.FieldAccessExpr, *ast.IndexExpr:
+			// Valid L-values
+		case *ast.PrefixExpr:
+			if leftNode.Operator != "*" {
+				return e.error(leftNode.Span(), "invalid prefix assignment target")
+			}
+		default:
 			return e.error(node.Left.Span(), "invalid assignment target")
 		}
-		if node.Operator == "=" && !e.typesMatch(leftID, rightID) {
+
+		if (node.Operator == "=" || node.Operator == "~=") && !e.typesMatch(leftID, rightID) {
 			return e.error(node.Span(), "type mismatch in assignment")
 		}
+
+		// This prevents them from accidentally bubbling out of blocks!
+		return e.CachedPrimitives["void"]
 	}
 
 	// --- RANGE OPERATOR (0...10) ---

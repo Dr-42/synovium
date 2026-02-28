@@ -110,6 +110,9 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.LOOP, p.parseLoopExpression)
 	p.registerPrefix(lexer.LBRACE, p.parseBlockExpression)
 
+	p.registerPrefix(lexer.STRUCT, p.parseStructExpr)
+	p.registerPrefix(lexer.ENUM, p.parseEnumExpr)
+
 	// --- INFIX REGISTRATIONS ---
 	infixes := []lexer.TokenType{
 		lexer.PLUS, lexer.MINUS, lexer.ASTERISK, lexer.SLASH, lexer.MOD,

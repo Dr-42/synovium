@@ -75,13 +75,33 @@ func (p *Parser) parseVariableDecl() ast.Decl {
 	return decl
 }
 
+// --- EXPRESSION WRAPPERS (Safe Type Assertions) ---
+
+func (p *Parser) parseStructExpr() ast.Expr {
+	decl := p.parseStructDecl()
+	if decl == nil {
+		return nil // Safely bubble the error up!
+	}
+	return decl.(*ast.StructDecl)
+}
+
+func (p *Parser) parseEnumExpr() ast.Expr {
+	decl := p.parseEnumDecl()
+	if decl == nil {
+		return nil // Safely bubble the error up!
+	}
+	return decl.(*ast.EnumDecl)
+}
+
 // --- STRUCT DECLARATION ---
 func (p *Parser) parseStructDecl() ast.Decl {
 	decl := &ast.StructDecl{Token: p.curToken}
-	if !p.expectPeek(lexer.IDENT) {
-		return nil
+
+	// MAKE THE IDENTIFIER OPTIONAL (Anonymous Structs)
+	if p.peekTokenIs(lexer.IDENT) {
+		p.nextToken()
+		decl.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 	}
-	decl.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
@@ -115,10 +135,12 @@ func (p *Parser) parseStructDecl() ast.Decl {
 // --- ENUM DECLARATION ---
 func (p *Parser) parseEnumDecl() ast.Decl {
 	decl := &ast.EnumDecl{Token: p.curToken}
-	if !p.expectPeek(lexer.IDENT) {
-		return nil
+
+	// MAKE THE IDENTIFIER OPTIONAL (Anonymous Enums)
+	if p.peekTokenIs(lexer.IDENT) {
+		p.nextToken()
+		decl.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 	}
-	decl.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
@@ -139,7 +161,7 @@ func (p *Parser) parseEnumDecl() ast.Decl {
 				if p.peekTokenIs(lexer.COMMA) {
 					p.nextToken()
 				}
-				p.nextToken()
+				p.nextToken() // move past comma or to RPAREN
 			}
 		}
 		decl.Variants = append(decl.Variants, variant)

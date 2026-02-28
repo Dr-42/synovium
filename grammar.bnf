@@ -1,3 +1,4 @@
+
 // ============================================================================
 // SYNOVIUM EBNF (Standardized for Tree-sitter / Recursive Descent)
 // ============================================================================
@@ -29,7 +30,7 @@
 <return_op>     ::= ":=" | "="
 
 <variable_decl> ::= <identifier> ":" <type> <assign_op> <expression>
-<assign_op>     ::= "=" | "~=" | ":="
+<assign_op>     ::= "=" | "~=" | ":=" | "+=" | "-=" | "*=" | "/=" | "%="
 
 // --- 4. BLOCKS & STATEMENTS ---
 // A block is an expression itself because of "bubbling"
@@ -44,13 +45,14 @@
 // --- 5. TYPES ---
 <type>        ::= "*"* "&"* <base_type>
 <base_type>   ::= <identifier> ( "." <identifier> )* | "[" <type> ";" ( <expression> | ":" ) "]"
+                | "fnc" "(" <type_list>? ")" ( <return_op> <type> )?
 <type_list>   ::= <type> ( "," <type> )*
 
 // --- 6. EXPRESSIONS (Strict C Precedence: Lowest to Highest) ---
 <expression>  ::= <assignment_expr>
 
 // Precedence 15: Assignment (Right-Associative)
-<assignment_expr> ::= <range_expr> ( ( "=" | "~=" ) <assignment_expr> )?
+<assignment_expr> ::= <range_expr> ( <assign_op> <assignment_expr> )?
 
 // Precedence 14: Range Operator
 <range_expr>  ::= <logical_or_expr> ( "..." <logical_or_expr> )?
@@ -107,6 +109,10 @@
                 | <match_expr>
                 | <loop_expr>
                 | <block> 
+                | <lambda_expr>
+
+// Lambdas are just function declarations with an optional identifier
+<lambda_expr> ::= "fnc" <identifier>? "(" <parameter_list>? ")" ( <return_op> <type> )? <block>
 
 <struct_init_expr> ::= <identifier> "{" <struct_init_list>? "}"
 <struct_init_list> ::= <struct_init_field> ( "," <struct_init_field> )* ","?
@@ -128,7 +134,7 @@
 // --- 8. TERMINALS (Lexicon) ---
 <identifier>  ::= [a-zA-Z_] [a-zA-Z0-9_]*
 
-<literal>     ::= <int_lit> | <float_lit> | <string_lit> | <char_lit> | "bln"
+<literal>     ::= <int_lit> | <float_lit> | <string_lit> | <char_lit> | "true" | "false"
 
 // Strict integer literal definitions
 <int_lit>     ::= "0" | [1-9] [0-9]* /* Base 10, no leading zeros */

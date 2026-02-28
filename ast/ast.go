@@ -329,6 +329,7 @@ type StructDecl struct {
 }
 
 func (s *StructDecl) declNode()        {}
+func (s *StructDecl) exprNode()        {}
 func (s *StructDecl) Span() lexer.Span { return lexer.Span{Start: s.Token.Span.Start, End: s.EndSpan} }
 
 type FieldDecl struct {
@@ -346,6 +347,7 @@ type EnumDecl struct {
 }
 
 func (e *EnumDecl) declNode()        {}
+func (e *EnumDecl) exprNode()        {}
 func (e *EnumDecl) Span() lexer.Span { return lexer.Span{Start: e.Token.Span.Start, End: e.EndSpan} }
 
 type VariantDecl struct {
@@ -363,6 +365,7 @@ type ImplDecl struct {
 }
 
 func (i *ImplDecl) declNode()        {}
+func (i *ImplDecl) stmtNode()        {}
 func (i *ImplDecl) Span() lexer.Span { return lexer.Span{Start: i.Token.Span.Start, End: i.EndSpan} }
 
 // ============================================================================

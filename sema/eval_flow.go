@@ -59,10 +59,11 @@ func (e *Evaluator) evaluateIf(node *ast.IfExpr, scope *Scope) TypeID {
 		if elseType != baseType {
 			return e.error(node.ElseBody.Span(), "else branch type does not match the if branch type")
 		}
-	} else if baseType != 0 {
-		// A crucial catch: If an 'if' expression returns a value (e.g., `x := if true { 5 }`),
-		// it MUST have an 'else' block. Otherwise, what happens if the condition is false?
-		return e.error(node.Span(), "if expression returning a value must have an exhaustive else branch")
+	} else {
+		// baseType == 0 means an error already happened inside, so we don't cascade another error.
+		if baseType != 0 && baseType != e.CachedPrimitives["void"] {
+			return e.error(node.Span(), "if expression returning a value must have an exhaustive else branch")
+		}
 	}
 
 	return baseType
