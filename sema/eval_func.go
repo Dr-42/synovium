@@ -107,7 +107,6 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 	isMethodCall := false
 	var methodSelfArg TypeID = 0
 
-	// If we are calling something like `v_ptr.magnitude_sq()`
 	if fieldAccess, ok := node.Function.(*ast.FieldAccessExpr); ok {
 		leftObjID := e.Evaluate(fieldAccess.Left, scope)
 		actualObjType := e.Pool.Types[leftObjID]
@@ -116,17 +115,14 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			actualObjType = e.Pool.Types[actualObjType.BaseType]
 		}
 
-		// Check if it's genuinely a method attached to the struct
 		if _, isMethod := actualObjType.Methods[fieldAccess.Field.Value]; isMethod {
 			isMethodCall = true
 			methodSelfArg = leftObjID
 
-			// Auto-Reference: If method needs *Vec3 but we called it on Vec3
 			expectedSelfType := funcType.FuncParams[0]
 			if (e.Pool.Types[expectedSelfType].Mask&MaskIsPointer) != 0 && (e.Pool.Types[methodSelfArg].Mask&MaskIsPointer) == 0 {
 				methodSelfArg = e.getOrCreatePointerType(methodSelfArg)
 			}
-			// Auto-Dereference: If method needs Vec3 but we called it on *Vec3
 			if (e.Pool.Types[expectedSelfType].Mask&MaskIsPointer) == 0 && (e.Pool.Types[methodSelfArg].Mask&MaskIsPointer) != 0 {
 				methodSelfArg = e.Pool.Types[methodSelfArg].BaseType
 			}
@@ -143,7 +139,6 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 		return e.error(node.Span(), "incorrect number of arguments")
 	}
 
-	// Determine if this is a generic instantiation call
 	isGenericCall := false
 	for _, p := range funcType.FuncParams {
 		if p == e.CachedPrimitives["type"] {
@@ -157,7 +152,6 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 		decl := funcType.Executable.(*ast.FunctionDecl)
 		instScope := NewScope(scope)
 
-		// 1. Extract and bind the generic type arguments FIRST
 		for i, param := range decl.Parameters {
 			if funcType.FuncParams[i] == e.CachedPrimitives["type"] {
 				concreteTypeID := e.Evaluate(node.Arguments[i], scope)
@@ -168,7 +162,6 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			}
 		}
 
-		// 2. Re-resolve parameter and return types within the instantiated scope!
 		concreteParams := make([]TypeID, len(decl.Parameters))
 		for i, param := range decl.Parameters {
 			if funcType.FuncParams[i] == e.CachedPrimitives["type"] {
@@ -183,7 +176,7 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			concreteRet = e.resolveTypeSignature(decl.ReturnType, instScope)
 		}
 
-		// 3. Type-Check normal arguments against the specialized signature
+		// THE FIX: Use typesMatch for generic arguments
 		for i, arg := range node.Arguments {
 			argType := e.Evaluate(arg, scope)
 			if argType == 0 {
@@ -192,13 +185,12 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			if concreteParams[i] == e.CachedPrimitives["type"] {
 				continue
 			}
-			if argType != concreteParams[i] {
+			if !e.typesMatch(concreteParams[i], argType) {
 				return e.error(arg.Span(), "argument type mismatch in generic instantiation")
 			}
 			instScope.Define(decl.Parameters[i].Name.Value, argType, false, decl.Parameters[i].Name)
 		}
 
-		// 4. Evaluate the specialized body!
 		prevRet := e.ExpectedReturnType
 		e.ExpectedReturnType = concreteRet
 		actualRet := e.evaluateBlock(decl.Body, instScope)
@@ -224,7 +216,8 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 	// --- STANDARD NON-GENERIC CALL ROUTINE ---
 	argOffset := 0
 	if isMethodCall {
-		if methodSelfArg != funcType.FuncParams[0] {
+		// THE FIX: Use typesMatch for the injected 'self' receiver
+		if !e.typesMatch(funcType.FuncParams[0], methodSelfArg) {
 			return e.error(node.Function.Span(), "implicit 'self' parameter type mismatch")
 		}
 		argOffset = 1
@@ -236,9 +229,11 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			return 0
 		}
 
-		if argType != funcType.FuncParams[i+argOffset] {
+		// THE FIX: Use typesMatch for standard arguments
+		if !e.typesMatch(funcType.FuncParams[i+argOffset], argType) {
 			return e.error(arg.Span(), "argument type mismatch")
 		}
 	}
+
 	return funcType.FuncReturn
 }

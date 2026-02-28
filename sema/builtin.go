@@ -29,7 +29,10 @@ func (e *Evaluator) InjectBuiltins(globalScope *Scope) {
 	// 2. Booleans
 	forge("bln", 0, 8, "i1")
 
-	// 3. Integers (Ranked 1 to 4)
+	// 3. Chars
+	forge("chr", MaskIsNumeric, 8, "i8")
+
+	// 4. Integers (Ranked 1 to 4)
 	forge("i8", MaskIsNumeric|MaskIsSigned|(1<<RankShift), 8, "i8")
 	forge("i16", MaskIsNumeric|MaskIsSigned|(2<<RankShift), 16, "i16")
 	forge("i32", MaskIsNumeric|MaskIsSigned|(3<<RankShift), 32, "i32")
@@ -40,14 +43,14 @@ func (e *Evaluator) InjectBuiltins(globalScope *Scope) {
 	forge("u32", MaskIsNumeric|(3<<RankShift), 32, "i32")
 	forge("u64", MaskIsNumeric|(4<<RankShift), 64, "i64")
 
-	// 4. Floats (Ranked 3 to 4, with the Float bit flagged)
+	// 5. Floats (Ranked 3 to 4, with the Float bit flagged)
 	forge("f32", MaskIsNumeric|MaskIsFloat|MaskIsSigned|(3<<RankShift), 32, "float")
 	forge("f64", MaskIsNumeric|MaskIsFloat|MaskIsSigned|(4<<RankShift), 64, "double")
 
-	// 5. Strings (Represented natively as a fat pointer: length + pointer to u8)
+	// 6. Strings (Represented natively as a fat pointer: length + pointer to u8)
 	forge("str", MaskIsStruct, 128, "{ i64, i8* }")
 
-	// 6. Void (For statements and empty blocks)
+	// 7. Void (For statements and empty blocks)
 	forge("void", 0, 0, "void")
 }
 

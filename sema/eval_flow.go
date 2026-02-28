@@ -69,33 +69,27 @@ func (e *Evaluator) evaluateIf(node *ast.IfExpr, scope *Scope) TypeID {
 }
 
 // evaluateLoop tracks loop depth for valid breaks and checks the bubbled yield types.
+// evaluateLoop tracks loop depth for valid breaks and checks the bubbled yield types.
 func (e *Evaluator) evaluateLoop(node *ast.LoopExpr, scope *Scope) TypeID {
 	// Create an inner scope specifically for the loop condition (e.g., `i : i32 = 0...10`)
 	loopScope := NewScope(scope)
 
 	if node.Condition != nil {
-		// If it's a variable declaration (the iterator), evaluate it
 		e.Evaluate(node.Condition, loopScope)
 	}
 
-	// Increment loop depth so `brk` and `yld` statements know they are legally allowed
 	e.LoopDepth++
 	defer func() { e.LoopDepth-- }()
 
-	// Currently, our yield type starts as unknown (0). The first `yld` encountered will set it.
-	// We reset this for nested loops.
 	prevYieldType := e.ExpectedYieldType
 	e.ExpectedYieldType = 0
 	defer func() { e.ExpectedYieldType = prevYieldType }()
 
-	// Evaluate the loop body
 	blockType := e.evaluateBlock(node.Body, loopScope)
 
-	// If the loop utilizes `yld` statements, it returns an Array of the yielded type.
-	// For now, we will just return the base yield type, but later this will construct an ArrayType in the TypePool.
 	if e.ExpectedYieldType != 0 {
-		// TODO: Wrap ExpectedYieldType into an `ast.ArrayType` in the TypePool
-		return e.ExpectedYieldType
+		// THE FIX: Dynamically forge a Slice [T; :] of the yielded type!
+		return e.getOrCreateArrayType(e.ExpectedYieldType, 0, true)
 	}
 
 	return blockType

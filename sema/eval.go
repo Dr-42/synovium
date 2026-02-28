@@ -6,14 +6,10 @@ import (
 	"synovium/lexer"
 )
 
-// Evaluator is the Abstract Interpreter that type-checks and executes comptime logic.
 type Evaluator struct {
-	Pool   *TypePool
-	Errors []string
-
-	// Pre-cached primitives for fast lookup during AST walking
-	CachedPrimitives map[string]TypeID
-
+	Pool               *TypePool
+	Errors             []string
+	CachedPrimitives   map[string]TypeID
 	LoopDepth          int
 	ExpectedReturnType TypeID
 	ExpectedYieldType  TypeID
@@ -29,20 +25,17 @@ func NewEvaluator(pool *TypePool) *Evaluator {
 
 func (e *Evaluator) error(span lexer.Span, msg string) TypeID {
 	e.Errors = append(e.Errors, fmt.Sprintf("Error at bytes %d-%d: %s", span.Start, span.End, msg))
-	return 0 // 0 acts as our 'Error/Void' TypeID
+	return 0
 }
 
-// Evaluate is the master switch statement. It recursively type-executes the AST.
 func (e *Evaluator) Evaluate(node ast.Node, scope *Scope) TypeID {
 	if node == nil {
 		return 0
 	}
 
 	switch n := node.(type) {
-
 	// --- 1. LITERALS ---
 	case *ast.IntLiteral:
-		// Default to i32 for integer literals unless constrained otherwise
 		return e.CachedPrimitives["i32"]
 	case *ast.FloatLiteral:
 		return e.CachedPrimitives["f64"]
@@ -50,6 +43,8 @@ func (e *Evaluator) Evaluate(node ast.Node, scope *Scope) TypeID {
 		return e.CachedPrimitives["bln"]
 	case *ast.StringLiteral:
 		return e.CachedPrimitives["str"]
+	case *ast.CharLiteral:
+		return e.CachedPrimitives["chr"] // ADDED!
 
 	// --- 2. IDENTIFIERS & VARIABLES ---
 	case *ast.Identifier:
@@ -63,30 +58,31 @@ func (e *Evaluator) Evaluate(node ast.Node, scope *Scope) TypeID {
 		return sym.TypeID
 
 	case *ast.VariableDecl:
-		// 1. Evaluate the right-hand side to get the concrete layout
 		rhsType := e.Evaluate(n.Value, scope)
 		if rhsType == 0 {
 			return 0
-		} // Cascade error
+		}
 
-		// 2. Resolve the left-hand explicit type signature
-		// (Assuming we have a helper to parse `ast.Type` into a `TypeID`)
 		lhsType := e.resolveTypeSignature(n.Type, scope)
-
-		// 3. Type Check!
 		if lhsType != 0 && !e.typesMatch(lhsType, rhsType) {
-			// In the future, we can check for valid implicit casts here
 			return e.error(n.Span(), "type mismatch in variable declaration")
 		}
 
-		// 4. Register in Scope
 		isMut := n.Operator == "~="
-		_, err := scope.Define(n.Name.Value, rhsType, isMut, n)
-		if err != nil {
-			return e.error(n.Span(), err.Error())
-		}
 
-		// Declarations technically evaluate to Void/0, but returning the type helps testing
+		// THE FIX: Check if the DAG hoisted this as a global variable.
+		// If it exists in the EXACT current scope and is unresolved, patch it!
+		if sym, exists := scope.Symbols[n.Name.Value]; exists && !sym.IsResolved {
+			sym.TypeID = rhsType
+			sym.IsMutable = isMut
+			sym.IsResolved = true
+		} else {
+			// Otherwise, it's a normal local variable (e.g., inside a function)
+			_, err := scope.Define(n.Name.Value, rhsType, isMut, n)
+			if err != nil {
+				return e.error(n.Span(), err.Error())
+			}
+		}
 		return rhsType
 
 	// --- 3. INFIX MATH & ASSIGNMENT ---
@@ -143,25 +139,20 @@ func (e *Evaluator) Evaluate(node ast.Node, scope *Scope) TypeID {
 	case *ast.MatchExpr:
 		return e.evaluateMatchExpr(n, scope)
 	}
-
 	return e.error(node.Span(), fmt.Sprintf("unsupported AST node for evaluation: %T", node))
 }
 
-// evaluateInfix handles binary operators, primitive promotion, and mutability validation.
 func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 	leftID := e.Evaluate(node.Left, scope)
 	rightID := e.Evaluate(node.Right, scope)
 
 	if leftID == 0 || rightID == 0 {
-		return 0 // Cascade error
+		return 0
 	}
 
-	// --- ASSIGNMENT & MUTABILITY CHECK (~=, =, +=) ---
-	isAssignment := node.Operator == "=" || node.Operator == "~=" ||
-		node.Operator == "+=" || node.Operator == "-="
-
+	// --- ASSIGNMENT & MUTABILITY CHECK ---
+	isAssignment := node.Operator == "=" || node.Operator == "~=" || node.Operator == "+=" || node.Operator == "-=" || node.Operator == "*=" || node.Operator == "/=" || node.Operator == "%="
 	if isAssignment {
-		// Ensure the left side is an identifier (or field access) that was declared mutable
 		if ident, ok := node.Left.(*ast.Identifier); ok {
 			sym, _ := scope.Resolve(ident.Value)
 			if sym != nil && !sym.IsMutable {
@@ -170,8 +161,6 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 		} else {
 			return e.error(node.Left.Span(), "invalid assignment target")
 		}
-
-		// If it's a strict reassignment, types must match
 		if node.Operator == "=" && !e.typesMatch(leftID, rightID) {
 			return e.error(node.Span(), "type mismatch in assignment")
 		}
@@ -182,27 +171,28 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 		if (e.Pool.Types[leftID].Mask&MaskIsNumeric) == 0 || (e.Pool.Types[rightID].Mask&MaskIsNumeric) == 0 {
 			return e.error(node.Span(), "range bounds must be numeric")
 		}
-		return leftID // Yields the type being iterated
+		return leftID
 	}
 
-	// --- ARITHMETIC PRIMITIVE PROMOTION ---
-	isMath := node.Operator == "+" || node.Operator == "-" ||
-		node.Operator == "*" || node.Operator == "/"
+	// --- RELATIONAL & LOGICAL (ADDED: Strictly returns `bln`) ---
+	isRelational := node.Operator == "==" || node.Operator == "!=" || node.Operator == "<" || node.Operator == "<=" || node.Operator == ">" || node.Operator == ">="
+	isLogical := node.Operator == "&&" || node.Operator == "||"
+	if isRelational || isLogical {
+		return e.CachedPrimitives["bln"]
+	}
+
+	// --- ARITHMETIC PRIMITIVE PROMOTION (ADDED %, |, &, ^, <<, >>) ---
+	isMath := node.Operator == "+" || node.Operator == "-" || node.Operator == "*" || node.Operator == "/" || node.Operator == "%" || node.Operator == "|" || node.Operator == "&" || node.Operator == "^" || node.Operator == "<<" || node.Operator == ">>"
 
 	if isMath {
 		leftType := e.Pool.Types[leftID]
 		rightType := e.Pool.Types[rightID]
 
-		// 1. Are they both hardware math primitives?
 		if (leftType.Mask&MaskIsNumeric) == 0 || (rightType.Mask&MaskIsNumeric) == 0 {
-			// If not, we route to the 2D Dispatch Table for operator overloading
 			return e.routeToDispatchTable(node.Operator, leftID, rightID, node.Span())
 		}
 
-		// 2. Hardware Promotion using our high-speed bitwise engine
 		promotedMask := PromoteNumeric(leftType.Mask, rightType.Mask)
-
-		// Find the TypeID in the pool that matches this exact promoted primitive mask
 		for _, t := range e.Pool.Types {
 			if t.Mask == promotedMask && t.IsFundamental {
 				return t.ID
@@ -210,24 +200,21 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 		}
 	}
 
-	return leftID // Fallback for logical operators (&&, ||) which will eventually return `bln`
+	return leftID
 }
 
 func (e *Evaluator) routeToDispatchTable(op string, left, right TypeID, span lexer.Span) TypeID {
 	return e.error(span, "operator overloading / dispatch tables not yet implemented")
 }
 
-// typesMatch performs structural duck-typing for complex types that don't share an ID
 func (e *Evaluator) typesMatch(expected, actual TypeID) bool {
 	if expected == actual {
-		return true // Perfect Hash Cons match
+		return true
 	}
 
 	expType := e.Pool.Types[expected]
 	actType := e.Pool.Types[actual]
 
-	// Function Signature Matching
-	// A <lambda> can securely be assigned to a fnc_ptr if their signatures match perfectly.
 	if (expType.Mask&MaskIsFunction) != 0 && (actType.Mask&MaskIsFunction) != 0 {
 		if len(expType.FuncParams) != len(actType.FuncParams) {
 			return false
