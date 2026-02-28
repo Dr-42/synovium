@@ -409,6 +409,10 @@ type MatchArm struct {
 	Body    *Block
 }
 
+func (m *MatchArm) Span() lexer.Span {
+	return m.Body.Span()
+}
+
 type LoopExpr struct {
 	Token     lexer.Token // The 'loop' token
 	Condition Node        // Can be an Expr OR a VariableDecl (e.g., i: i32 = 0...10)
@@ -436,6 +440,12 @@ type StructInitField struct {
 	Token lexer.Token // The '.' token
 	Name  *Identifier
 	Value Expr
+	Type  Type
+}
+
+func (c *StructInitField) exprNode() {}
+func (c *StructInitField) Span() lexer.Span {
+	return lexer.Span{Start: c.Name.Span().Start, End: c.Value.Span().End}
 }
 
 type CastExpr struct {

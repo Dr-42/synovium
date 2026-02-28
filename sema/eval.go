@@ -35,6 +35,23 @@ func (e *Evaluator) Evaluate(node ast.Node, scope *Scope) TypeID {
 		return 0
 	}
 
+	// 1. Calculate the actual type using our existing robust logic
+	result := e.evaluateInternal(node, scope)
+
+	// 2. Stamp the physical AST node in the TAST side-tables
+	if result != 0 {
+		e.Pool.NodeTypes[node] = result
+		e.Pool.NodeScopes[node] = scope
+	}
+
+	return result
+}
+
+func (e *Evaluator) evaluateInternal(node ast.Node, scope *Scope) TypeID {
+	if node == nil {
+		return 0
+	}
+
 	switch n := node.(type) {
 	// --- 1. LITERALS ---
 	case *ast.IntLiteral:

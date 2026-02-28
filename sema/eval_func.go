@@ -149,7 +149,8 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 
 	// --- GENERIC MONOMORPHIZATION ROUTINE ---
 	if isGenericCall && funcType.Executable != nil {
-		decl := funcType.Executable.(*ast.FunctionDecl)
+		originalDecl := funcType.Executable.(*ast.FunctionDecl)
+		decl := ast.CloneNode(originalDecl).(*ast.FunctionDecl)
 		instScope := NewScope(scope)
 
 		for i, param := range decl.Parameters {

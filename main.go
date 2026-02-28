@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"synovium/ast"
 	"synovium/lexer"
 	"synovium/parser"
 	"synovium/sema"
@@ -26,24 +27,13 @@ func main() {
 	rawCode := string(content)
 
 	// ==========================================
-	// 🔎 STAGE 1: LEXICAL ANALYSIS VISUALIZER
+	// 🔎 STAGE 1: LEXICAL ANALYSIS
 	// ==========================================
 	fmt.Println("🔎 STAGE 1: LEXICAL ANALYSIS")
-	debugLexer := lexer.New(rawCode)
-	tokenCount := 0
-	for {
-		tok := debugLexer.NextToken()
-		if tok.Type == lexer.EOF {
-			break
-		}
-		// Print a clean, formatted grid of tokens
-		fmt.Printf("[%03d:%03d] %-12s '%s'\n", tok.Line, tok.Column, tok.Type, tok.Literal)
-		tokenCount++
-	}
-	fmt.Printf("✅ Lexed %d tokens.\n\n", tokenCount)
+	// (Hidden for brevity)
 
 	// ==========================================
-	// 🌳 STAGE 2: SYNTACTIC ANALYSIS (AST)
+	// 🌳 STAGE 2: SYNTACTIC ANALYSIS (RAW AST)
 	// ==========================================
 	fmt.Println("🌳 STAGE 2: ABSTRACT SYNTAX TREE")
 	l := lexer.New(rawCode)
@@ -58,10 +48,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Print raw AST (pass nil for the pool)
 	for _, decl := range program.Declarations {
-		printNode(decl, "", true, "")
+		printNode(decl, "", true, "", nil)
 	}
-	fmt.Println("\n✅ Parsing Successful.")
+	fmt.Println("\n✅ Parsing Successful.\n")
 
 	// ==========================================
 	// 🧠 STAGE 3: SEMANTIC ANALYSIS
@@ -89,12 +80,22 @@ func main() {
 		for _, err := range evaluator.Errors {
 			fmt.Printf("  - %s\n", err)
 		}
+		os.Exit(1)
 	} else {
-		fmt.Println("✅ Execution and Layouts verified.")
+		fmt.Println("✅ Execution and Layouts verified.\n")
 	}
 
 	// ==========================================
-	// 🗺️ STAGE 4: THE GLOBAL SYMBOL TABLE
+	// 🌲 STAGE 4: TYPED ABSTRACT SYNTAX TREE
+	// ==========================================
+	fmt.Println("🌲 STAGE 4: TYPED ABSTRACT SYNTAX TREE (TAST)")
+	for _, decl := range sortedDecls {
+		printNode(decl, "", true, "", pool)
+	}
+	fmt.Println()
+
+	// ==========================================
+	// 🗺️ STAGE 5: THE GLOBAL SYMBOL TABLE
 	// ==========================================
 	fmt.Println("🗺️  THE GLOBAL SYMBOL TABLE (Lexical Scope):")
 	for name, sym := range globalScope.Symbols {
@@ -103,7 +104,6 @@ func main() {
 			mutStr = "Mutable"
 		}
 
-		// Map the TypeID back to its string name for readability
 		typeName := "<unresolved>"
 		if int(sym.TypeID) < len(pool.Types) {
 			typeName = pool.Types[sym.TypeID].Name
@@ -114,7 +114,7 @@ func main() {
 	fmt.Println()
 
 	// ==========================================
-	// 🏊 STAGE 5: THE TYPE POOL
+	// 🏊 STAGE 6: THE TYPE POOL
 	// ==========================================
 	fmt.Println("🏊 THE TYPE POOL (Computed Memory Layouts):")
 	for _, t := range pool.Types {
@@ -170,7 +170,8 @@ type astChild struct {
 	val  any
 }
 
-func printNode(node any, prefix string, isLast bool, name string) {
+// Pass the TypePool to lookup the physical Node memory addresses
+func printNode(node any, prefix string, isLast bool, name string, pool *sema.TypePool) {
 	if node == nil {
 		return
 	}
@@ -201,6 +202,20 @@ func printNode(node any, prefix string, isLast bool, name string) {
 			display += fmt.Sprintf(" (%d)", valField.Int())
 		} else if opField := v.FieldByName("Operator"); opField.IsValid() && opField.Kind() == reflect.String {
 			display += fmt.Sprintf(" [ %s ]", opField.String())
+		}
+	}
+
+	// ==========================================
+	// 🔬 THE TAST SIDE-TABLE LOOKUP
+	// ==========================================
+	if pool != nil {
+		if astNode, ok := node.(ast.Node); ok {
+			if typeID, exists := pool.NodeTypes[astNode]; exists {
+				if int(typeID) < len(pool.Types) {
+					// Append the proven type in Cyan!
+					display += fmt.Sprintf("  ->  \033[36m%s\033[0m", pool.Types[typeID].Name)
+				}
+			}
 		}
 	}
 
@@ -243,6 +258,6 @@ func printNode(node any, prefix string, isLast bool, name string) {
 	}
 
 	for i, child := range children {
-		printNode(child.val, childPrefix, i == len(children)-1, child.name)
+		printNode(child.val, childPrefix, i == len(children)-1, child.name, pool)
 	}
 }

@@ -70,6 +70,12 @@ type TypePool struct {
 	SubDispatch [][]TypeID
 	MulDispatch [][]TypeID
 	DivDispatch [][]TypeID
+
+	// --- THE TAST SIDE-TABLES ---
+	// Maps physical AST node pointers to their proven Types and Scopes.
+	// Codegen will read directly from these maps!
+	NodeTypes  map[ast.Node]TypeID
+	NodeScopes map[ast.Node]*Scope
 }
 
 // NewTypePool initializes the global pool.
@@ -80,6 +86,8 @@ func NewTypePool() *TypePool {
 		SubDispatch: make([][]TypeID, 0),
 		MulDispatch: make([][]TypeID, 0),
 		DivDispatch: make([][]TypeID, 0),
+		NodeTypes:   make(map[ast.Node]TypeID),
+		NodeScopes:  make(map[ast.Node]*Scope),
 	}
 
 	// --- THE FIX: Reserve TypeID(0) for Errors ---

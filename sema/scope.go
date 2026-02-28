@@ -17,6 +17,8 @@ type Symbol struct {
 	// During Pass 1 (Hoisting), a function or struct might be registered
 	// before its exact TypeID is evaluated. We flag it as unresolved.
 	IsResolved bool
+
+	LLVMValue string
 }
 
 // Scope is a chained lexical environment.

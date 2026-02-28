@@ -53,10 +53,26 @@ func (e *Evaluator) InjectBuiltins(globalScope *Scope) {
 
 }
 
-// In sema/builtin.go
+// resolveTypeSignature evaluates a type node and stamps it into the TAST side-tables.
+func (e *Evaluator) resolveTypeSignature(node ast.Type, scope *Scope) TypeID {
+	if node == nil {
+		return 0
+	}
+
+	// 1. Calculate the type ID
+	result := e.resolveTypeSignatureInternal(node, scope)
+
+	// 2. Stamp the physical AST node in the TAST side-tables!
+	if result != 0 {
+		e.Pool.NodeTypes[node] = result
+		e.Pool.NodeScopes[node] = scope
+	}
+
+	return result
+}
 
 // resolveTypeSignature translates an AST type node (like `i32` or `*Vec3`) into its TypeID.
-func (e *Evaluator) resolveTypeSignature(t ast.Type, scope *Scope) TypeID {
+func (e *Evaluator) resolveTypeSignatureInternal(t ast.Type, scope *Scope) TypeID {
 	switch v := t.(type) {
 
 	case *ast.NamedType:
