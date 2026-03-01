@@ -61,6 +61,10 @@ func (p *Parser) parseFunctionLiteral() ast.Expr {
 	// 2. Parameters
 	for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
 		p.nextToken() // Move to identifier
+		if p.curToken.Type == lexer.RANGE {
+			decl.IsVariadic = true
+			break
+		}
 		param := &ast.Parameter{
 			Token: p.curToken,
 			Name:  &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
@@ -86,6 +90,11 @@ func (p *Parser) parseFunctionLiteral() ast.Expr {
 		decl.ReturnOp = p.curToken.Literal
 		p.nextToken() // Move to type
 		decl.ReturnType = p.parseType()
+	}
+
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken() // Consume the ';'
+		return decl
 	}
 
 	if !p.expectPeek(lexer.LBRACE) {

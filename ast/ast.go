@@ -117,6 +117,7 @@ type FunctionType struct {
 	Token      lexer.Token // The 'fnc' token
 	Parameters []Type      // Note: These are just Types, not named Parameters!
 	ReturnType Type        // Optional
+	IsVariadic bool
 	EndSpan    int
 }
 
@@ -300,6 +301,7 @@ type FunctionDecl struct {
 	Token      lexer.Token
 	Name       *Identifier
 	Parameters []*Parameter
+	IsVariadic bool
 	ReturnOp   string // "=" or ":="
 	ReturnType Type   // Can be nil
 	Body       *Block

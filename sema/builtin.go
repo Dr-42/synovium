@@ -99,6 +99,7 @@ func (e *Evaluator) resolveTypeSignatureInternal(t ast.Type, scope *Scope) TypeI
 			Name:       "fnc_ptr",
 			FuncParams: paramIDs,
 			FuncReturn: retID,
+			IsVariadic: v.IsVariadic,
 		}
 		e.Pool.Types = append(e.Pool.Types, ft)
 		return ft.ID

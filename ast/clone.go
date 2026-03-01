@@ -62,6 +62,7 @@ func CloneNode(node Node) Node {
 			Parameters: params,
 			ReturnType: retType,
 			Body:       body,
+			IsVariadic: n.IsVariadic,
 		}
 
 	// -- Statements --
@@ -181,7 +182,12 @@ func CloneNode(node Node) Node {
 		if n.ReturnType != nil {
 			retType = CloneNode(n.ReturnType).(Type)
 		}
-		return &FunctionType{Token: n.Token, Parameters: params, ReturnType: retType}
+		return &FunctionType{
+			Token:      n.Token,
+			Parameters: params,
+			ReturnType: retType,
+			IsVariadic: n.IsVariadic,
+		}
 	}
 
 	panic(fmt.Sprintf("CloneNode: unhandled node type %T", node))

@@ -59,6 +59,7 @@ func (e *Evaluator) evaluateFunctionDecl(node *ast.FunctionDecl, scope *Scope) T
 		FuncParams: paramTypes,
 		FuncReturn: retType,
 		Executable: node, // Stash the AST for later Monomorphization!
+		IsVariadic: node.IsVariadic,
 	}
 	e.Pool.Types = append(e.Pool.Types, funcType)
 
@@ -129,14 +130,21 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 		}
 	}
 
+	// --- 1. VARIADIC-AWARE ARGUMENT COUNTING ---
 	expectedArgs := len(funcType.FuncParams)
 	actualArgs := len(node.Arguments)
 	if isMethodCall {
 		actualArgs++
 	}
 
-	if actualArgs != expectedArgs {
-		return e.error(node.Span(), "incorrect number of arguments")
+	if funcType.IsVariadic {
+		if actualArgs < expectedArgs {
+			return e.error(node.Span(), fmt.Sprintf("not enough arguments: expected at least %d, got %d", expectedArgs, actualArgs))
+		}
+	} else {
+		if actualArgs != expectedArgs {
+			return e.error(node.Span(), fmt.Sprintf("incorrect number of arguments: expected %d, got %d", expectedArgs, actualArgs))
+		}
 	}
 
 	isGenericCall := false
@@ -177,12 +185,18 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			concreteRet = e.resolveTypeSignature(decl.ReturnType, instScope)
 		}
 
-		// THE FIX: Use typesMatch for generic arguments
+		// THE FIX: Use typesMatch for generic arguments and skip variadics safely
 		for i, arg := range node.Arguments {
 			argType := e.Evaluate(arg, scope)
 			if argType == 0 {
 				return 0
 			}
+
+			// If it's variadic and we're past the named parameters, skip type checking!
+			if funcType.IsVariadic && i >= len(concreteParams) {
+				continue
+			}
+
 			if concreteParams[i] == e.CachedPrimitives["type"] {
 				continue
 			}
@@ -208,6 +222,7 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			Name:       specializedName,
 			FuncParams: concreteParams,
 			FuncReturn: concreteRet,
+			IsVariadic: decl.IsVariadic,
 		}
 		e.Pool.Types = append(e.Pool.Types, specializedFunc)
 
@@ -217,21 +232,27 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 	// --- STANDARD NON-GENERIC CALL ROUTINE ---
 	argOffset := 0
 	if isMethodCall {
-		// THE FIX: Use typesMatch for the injected 'self' receiver
 		if !e.typesMatch(funcType.FuncParams[0], methodSelfArg) {
 			return e.error(node.Function.Span(), "implicit 'self' parameter type mismatch")
 		}
 		argOffset = 1
 	}
 
+	// THE FIX: Variadic skip in the standard loop
 	for i, arg := range node.Arguments {
 		argType := e.Evaluate(arg, scope)
 		if argType == 0 {
 			return 0
 		}
 
-		// THE FIX: Use typesMatch for standard arguments
-		if !e.typesMatch(funcType.FuncParams[i+argOffset], argType) {
+		paramIndex := i + argOffset
+
+		// If it's variadic and we're past the named parameters, skip type checking!
+		if funcType.IsVariadic && paramIndex >= expectedArgs {
+			continue
+		}
+
+		if !e.typesMatch(funcType.FuncParams[paramIndex], argType) {
 			return e.error(arg.Span(), "argument type mismatch")
 		}
 	}

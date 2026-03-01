@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"synovium/ast"
+	"synovium/codegen"
 	"synovium/lexer"
 	"synovium/parser"
 	"synovium/sema"
@@ -27,15 +28,8 @@ func main() {
 	rawCode := string(content)
 
 	// ==========================================
-	// 🔎 STAGE 1: LEXICAL ANALYSIS
+	// 🌳 STAGE 1 & 2: SYNTACTIC ANALYSIS
 	// ==========================================
-	fmt.Println("🔎 STAGE 1: LEXICAL ANALYSIS")
-	// (Hidden for brevity)
-
-	// ==========================================
-	// 🌳 STAGE 2: SYNTACTIC ANALYSIS (RAW AST)
-	// ==========================================
-	fmt.Println("🌳 STAGE 2: ABSTRACT SYNTAX TREE")
 	l := lexer.New(rawCode)
 	p := parser.New(l)
 	program := p.ParseSourceFile()
@@ -48,16 +42,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Print raw AST (pass nil for the pool)
-	for _, decl := range program.Declarations {
-		printNode(decl, "", true, "", nil)
-	}
-	fmt.Println("\n✅ Parsing Successful.\n")
-
 	// ==========================================
-	// 🧠 STAGE 3: SEMANTIC ANALYSIS
+	// 🧠 STAGE 3: SEMANTIC ANALYSIS & DAG
 	// ==========================================
-	fmt.Println("🧠 STAGE 3: SEMANTIC ANALYSIS (DAG & TYPE EXECUTION)")
 	pool := sema.NewTypePool()
 	globalScope := sema.NewScope(nil)
 
@@ -81,87 +68,28 @@ func main() {
 			fmt.Printf("  - %s\n", err)
 		}
 		os.Exit(1)
-	} else {
-		fmt.Println("✅ Execution and Layouts verified.\n")
 	}
 
 	// ==========================================
-	// 🌲 STAGE 4: TYPED ABSTRACT SYNTAX TREE
+	// 🌲 STAGE 4: PRINT TYPED AST (TAST)
 	// ==========================================
-	fmt.Println("🌲 STAGE 4: TYPED ABSTRACT SYNTAX TREE (TAST)")
+	fmt.Println("🌲 TYPED ABSTRACT SYNTAX TREE (TAST)")
 	for _, decl := range sortedDecls {
 		printNode(decl, "", true, "", pool)
 	}
 	fmt.Println()
 
 	// ==========================================
-	// 🗺️ STAGE 5: THE GLOBAL SYMBOL TABLE
+	// 📜 STAGE 7: LLVM IR CODE GENERATION
 	// ==========================================
-	fmt.Println("🗺️  THE GLOBAL SYMBOL TABLE (Lexical Scope):")
-	for name, sym := range globalScope.Symbols {
-		mutStr := "Immutable"
-		if sym.IsMutable {
-			mutStr = "Mutable"
-		}
+	fmt.Println("📜 STAGE 7: LLVM IR OUTPUT")
+	fmt.Println("--------------------------------------------------")
 
-		typeName := "<unresolved>"
-		if int(sym.TypeID) < len(pool.Types) {
-			typeName = pool.Types[sym.TypeID].Name
-		}
+	builder := codegen.NewBuilder(pool)
+	llvmIR := builder.Generate(sortedDecls)
 
-		fmt.Printf("  • %-15s -> Type: %-20s [%s]\n", name, typeName, mutStr)
-	}
-	fmt.Println()
-
-	// ==========================================
-	// 🏊 STAGE 6: THE TYPE POOL
-	// ==========================================
-	fmt.Println("🏊 THE TYPE POOL (Computed Memory Layouts):")
-	for _, t := range pool.Types {
-		fmt.Printf("[%02d] %s (Size: %d bits)\n", t.ID, t.Name, t.TrueSizeBits)
-
-		if t.Mask&sema.MaskIsFunction != 0 {
-			paramNames := make([]string, len(t.FuncParams))
-			for i, pID := range t.FuncParams {
-				paramNames[i] = pool.Types[pID].Name
-			}
-			retName := pool.Types[t.FuncReturn].Name
-			fmt.Printf("     Params: [%s] -> Ret: %s\n", strings.Join(paramNames, ", "), retName)
-
-		} else if t.Mask&sema.MaskIsStruct != 0 && len(t.Fields) > 0 {
-			fieldNames := []string{}
-			for fName, fID := range t.Fields {
-				fieldNames = append(fieldNames, fmt.Sprintf("%s:%s", fName, pool.Types[fID].Name))
-			}
-			fmt.Printf("     Fields: map[%s]\n", strings.Join(fieldNames, " "))
-
-			if len(t.Methods) > 0 {
-				methodNames := []string{}
-				for mName, mID := range t.Methods {
-					methodNames = append(methodNames, fmt.Sprintf("%s():%s", mName, pool.Types[mID].Name))
-				}
-				fmt.Printf("     Methods: %s\n", strings.Join(methodNames, ", "))
-			}
-		} else if t.Mask&sema.MaskIsStruct != 0 && len(t.Variants) > 0 {
-			variantStrs := []string{}
-			for vName, payloads := range t.Variants {
-				pNames := []string{}
-				for _, pID := range payloads {
-					pNames = append(pNames, pool.Types[pID].Name)
-				}
-				if len(pNames) > 0 {
-					variantStrs = append(variantStrs, fmt.Sprintf("%s(%s)", vName, strings.Join(pNames, ",")))
-				} else {
-					variantStrs = append(variantStrs, vName)
-				}
-			}
-			fmt.Printf("     Variants: %s\n", strings.Join(variantStrs, " | "))
-		} else if t.Mask&sema.MaskIsArray != 0 {
-			fmt.Printf("     Base: %s, Capacity: %d\n", pool.Types[t.BaseType].Name, t.Capacity)
-		} else if t.Mask&sema.MaskIsPointer != 0 {
-			fmt.Printf("     Points to: %s\n", pool.Types[t.BaseType].Name)
-		}
-	}
+	fmt.Println(llvmIR)
+	fmt.Println("--------------------------------------------------")
 }
 
 // --- AST PRINTING HELPERS ---
@@ -170,7 +98,6 @@ type astChild struct {
 	val  any
 }
 
-// Pass the TypePool to lookup the physical Node memory addresses
 func printNode(node any, prefix string, isLast bool, name string, pool *sema.TypePool) {
 	if node == nil {
 		return
@@ -205,9 +132,7 @@ func printNode(node any, prefix string, isLast bool, name string, pool *sema.Typ
 		}
 	}
 
-	// ==========================================
 	// 🔬 THE TAST SIDE-TABLE LOOKUP
-	// ==========================================
 	if pool != nil {
 		if astNode, ok := node.(ast.Node); ok {
 			if typeID, exists := pool.NodeTypes[astNode]; exists {

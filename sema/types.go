@@ -55,6 +55,7 @@ type UniversalType struct {
 	// For Functions
 	FuncParams []TypeID
 	FuncReturn TypeID
+	IsVariadic bool
 
 	// For Executable Comptime Functions/Modules
 	Executable ast.Node

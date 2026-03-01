@@ -78,6 +78,10 @@ func (p *Parser) parseFunctionType() ast.Type {
 	funcType := &ast.FunctionType{Token: tok}
 
 	for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
+		if p.curToken.Type == lexer.RANGE {
+			funcType.IsVariadic = true
+			break
+		}
 		p.nextToken()
 		funcType.Parameters = append(funcType.Parameters, p.parseType())
 		if p.peekTokenIs(lexer.COMMA) {
