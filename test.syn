@@ -1,92 +1,14 @@
-// ============================================================================
-// SYNOVIUM: PHASE 3 DEFINITIVE MASTER TEST
-// ============================================================================
+// test.syn
 
-// 1. ANONYMOUS TYPES & GENERICS (Proves the nil-pointer fixes)
-fnc ComptimePair(T: type) = type {
-    // This perfectly parses an anonymous struct expression!
-    ret struct {
-        first: T,
-        second: T,
-    };
-}
+fnc printf(fmt: str, ...);
 
-// 2. STANDARD DATA STRUCTURES & TAGGED UNIONS
 struct Entity {
-    id: u64,
+    id: i32,
     health: f64,
-    active: bln,
-}
-
-enum Action {
-    Spawn(Entity),
-    Despawn(u64),
-    Idle,
-}
-
-// 3. IMPL BLOCKS (Auto-Dereference & Receiver Injection)
-impl Entity {
-    fnc take_damage(self: *Self, amount: f64) {
-        self.health -= amount;
-        if self.health <= 0.0 {
-            self.active = false;
-        }
-    }
-}
-
-// 4. HIGHER ORDER FUNCTIONS & DUCK TYPING
-fnc process_entities(count: i32, processor: fnc(i32) = i32) = i32 {
-    ret processor(count);
-}
-
-// 5. GENERIC MONOMORPHIZATION
-fnc identity(T: type, val: T) = T {
-    ret val;
+    active: bln
 }
 
 fnc main() {
-    // A. Struct Initialization & Method Calls
-    boss: Entity = Entity {
-        .id = 999 as u64,
-        .health = 1000.5, 
-        .active = true
-    };
-    
-    boss_ptr: *Entity = &boss;
-    
-    // Auto-dereferences the pointer and injects `boss_ptr` as `self`
-    boss_ptr.take_damage(250.0); 
-
-    // B. Enums & Pattern Matching
-    current_action: Action = Action.Spawn(boss);
-    
-    // Strict exhaustiveness checking and payload unboxing
-    status_code: i32 = match current_action {
-        Action.Spawn(e) -> { 1 },
-        Action.Despawn(id) -> { -1 },
-        Action.Idle -> { 0 },
-    };
-
-    // C. Iterators, Loops, and Yielding
-    // Dynamically forges the [i32; :] fat pointer type
-    history: [i32; :] = loop(i: i32 = 0...5) {
-        if i == 3 {
-            brk;
-        } else {
-            yld i * status_code;
-        }
-    };
-
-    // D. Lambdas & Duck-Typing Function Pointers
-    mutiplier: fnc(i32) = i32 = fnc(x: i32) = i32 {
-        ret x * 10;
-    };
-    final_score: i32 = process_entities(5, mutiplier);
-
-    // E. Comptime Caching & Casting
-    val: i32 = identity(i32, final_score);
-    raw_ptr: u64 = boss_ptr as u64;
-    
-    // F. Bubbling Operator
-    safe_ptr: u64 = raw_ptr?;
+    boss: Entity = Entity { .id = 999, .health = 1000.5, .active = true };
+    printf("Boss spawned with ID: %d\n", boss.id);
 }

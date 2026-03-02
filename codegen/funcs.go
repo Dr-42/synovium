@@ -5,23 +5,21 @@ import (
 	"synovium/ast"
 )
 
-// emitFunction generates the LLVM IR for a function declaration or definition.
 func (b *Builder) emitFunction(node *ast.FunctionDecl) {
 	typeID := b.Pool.NodeTypes[node]
 	if typeID == 0 {
-		return // Skip unresolved templates
+		return
 	}
 
 	funcType := b.Pool.Types[typeID]
 	retLLVM := b.GetLLVMType(funcType.FuncReturn)
 
 	var params []string
-	for _, paramNode := range node.Parameters {
-		paramTypeID := b.Pool.NodeTypes[paramNode]
+	for i, paramNode := range node.Parameters {
+		// THE FIX: Directly access the mathematically proven parameters!
+		paramTypeID := funcType.FuncParams[i]
 		paramLLVM := b.GetLLVMType(paramTypeID)
 
-		// If it's a declaration, we just need the types.
-		// If it's a definition, we need the named virtual registers.
 		if node.Body == nil {
 			params = append(params, paramLLVM)
 		} else {
@@ -29,7 +27,6 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl) {
 		}
 	}
 
-	// Inject LLVM's variadic token
 	if funcType.IsVariadic {
 		if len(params) > 0 {
 			params = append(params, "...")
@@ -40,19 +37,28 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl) {
 
 	funcName := node.Name.Value
 
-	// --- THE FIX: Declare vs Define ---
 	if node.Body == nil {
-		// It's a Foreign C FFI signature!
 		b.EmitLine("declare %s @%s(%s)", retLLVM, funcName, strings.Join(params, ", "))
 		b.EmitLine("")
 		return
 	}
 
-	// It's a Native Synovium function!
 	b.EmitLine("define %s @%s(%s) {", retLLVM, funcName, strings.Join(params, ", "))
-
-	// Setup the entry block (Stub for now)
 	b.EmitLine("entry:")
+
+	// --- Push parameters to the stack so they can be mutated! ---
+	b.Locals = make(map[string]string)
+	for i, paramNode := range node.Parameters {
+		pName := paramNode.Name.Value
+		pLLVM := b.GetLLVMType(funcType.FuncParams[i])
+		b.EmitLine("  %%%s = alloca %s", pName, pLLVM)
+		b.EmitLine("  store %s %%%s, %s* %%%s", pLLVM, pName, pLLVM, pName)
+		b.Locals[pName] = "%" + pName
+	}
+
+	// --- Ignite the Core Engine ---
+	b.emitBlock(node.Body)
+
 	if retLLVM == "void" {
 		b.EmitLine("  ret void")
 	} else {

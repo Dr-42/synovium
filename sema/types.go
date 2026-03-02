@@ -42,6 +42,12 @@ type UniversalType struct {
 	// For Structs/Modules: Field name -> TypeID
 	Fields map[string]TypeID
 
+	// Fieldlayout for retaining order of declaration
+	FieldLayout []TypeID
+
+	//Maps field name to its physical LLVM index
+	FieldIndices map[string]int
+
 	// For Enums: Variant Name -> Slice of Payload TypeIDs
 	Variants map[string][]TypeID
 

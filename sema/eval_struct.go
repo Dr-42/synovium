@@ -7,14 +7,19 @@ import (
 
 func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeID {
 	fields := make(map[string]TypeID)
+	var fieldLayout []TypeID
+	fieldIndices := make(map[string]int) // <-- NEW
 	var totalSize uint64 = 0
 
-	for _, field := range node.Fields {
+	for i, field := range node.Fields { // <-- Note the 'i'
 		fieldTypeID := e.resolveTypeSignature(field.Type, scope)
 		if fieldTypeID == 0 {
 			return 0
 		}
+
 		fields[field.Name.Value] = fieldTypeID
+		fieldLayout = append(fieldLayout, fieldTypeID)
+		fieldIndices[field.Name.Value] = i // <-- NEW: Save the index!
 		totalSize += e.Pool.Types[fieldTypeID].TrueSizeBits
 	}
 
@@ -27,10 +32,13 @@ func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeI
 	structType := UniversalType{
 		ID:            TypeID(len(e.Pool.Types)),
 		Mask:          MaskIsStruct,
-		Name:          name, // Use the real name or the anonymous ID
+		Name:          name,
 		TrueSizeBits:  totalSize,
 		IsFundamental: false,
 		Fields:        fields,
+		FieldLayout:   fieldLayout,
+		FieldIndices:  fieldIndices, // <-- NEW: Attach it to the type!
+		Methods:       make(map[string]TypeID),
 	}
 
 	e.Pool.Types = append(e.Pool.Types, structType)
