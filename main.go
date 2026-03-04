@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+
 	"synovium/ast"
 	"synovium/codegen"
 	"synovium/lexer"
@@ -48,7 +49,7 @@ func main() {
 	pool := sema.NewTypePool()
 	globalScope := sema.NewScope(nil)
 
-	evaluator := sema.NewEvaluator(pool)
+	evaluator := sema.NewEvaluator(pool, rawCode)
 	evaluator.InjectBuiltins(globalScope)
 
 	dag := sema.NewDAG(globalScope)

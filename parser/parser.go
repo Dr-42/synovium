@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+
 	"synovium/ast"
 	"synovium/lexer"
 )
@@ -64,6 +65,7 @@ var precedences = map[lexer.TokenType]int{
 }
 
 type prefixParseFn func() ast.Expr
+
 type infixParseFn func(ast.Expr) ast.Expr
 
 type Parser struct {
@@ -109,6 +111,8 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.MATCH, p.parseMatchExpression)
 	p.registerPrefix(lexer.LOOP, p.parseLoopExpression)
 	p.registerPrefix(lexer.LBRACE, p.parseBlockExpression)
+
+	p.registerPrefix(lexer.LBRACKET, p.parseArrayInitExpression)
 
 	p.registerPrefix(lexer.STRUCT, p.parseStructExpr)
 	p.registerPrefix(lexer.ENUM, p.parseEnumExpr)
@@ -161,24 +165,30 @@ func (p *Parser) parseExpression(precedence int) ast.Expr {
 
 // --- UTILITIES ---
 func (p *Parser) Errors() []string { return p.errors }
+
 func (p *Parser) nextToken() {
 	p.curToken = p.peekToken
 	p.peekToken = p.l.NextToken()
 }
+
 func (p *Parser) peekTokenIs(t lexer.TokenType) bool { return p.peekToken.Type == t }
-func (p *Parser) curTokenIs(t lexer.TokenType) bool  { return p.curToken.Type == t }
+
+func (p *Parser) curTokenIs(t lexer.TokenType) bool { return p.curToken.Type == t }
+
 func (p *Parser) peekPrecedence() int {
 	if p, ok := precedences[p.peekToken.Type]; ok {
 		return p
 	}
 	return LOWEST
 }
+
 func (p *Parser) curPrecedence() int {
 	if p, ok := precedences[p.curToken.Type]; ok {
 		return p
 	}
 	return LOWEST
 }
+
 func (p *Parser) expectPeek(t lexer.TokenType) bool {
 	if p.peekTokenIs(t) {
 		p.nextToken()
@@ -187,16 +197,20 @@ func (p *Parser) expectPeek(t lexer.TokenType) bool {
 	p.peekError(t)
 	return false
 }
+
 func (p *Parser) peekError(t lexer.TokenType) {
 	msg := fmt.Sprintf("expected next token to be %s, got %s instead at line %d", t, p.peekToken.Type, p.peekToken.Line)
 	p.errors = append(p.errors, msg)
 }
+
 func (p *Parser) registerPrefix(tokenType lexer.TokenType, fn prefixParseFn) {
 	p.prefixParseFns[tokenType] = fn
 }
+
 func (p *Parser) registerInfix(tokenType lexer.TokenType, fn infixParseFn) {
 	p.infixParseFns[tokenType] = fn
 }
+
 func (p *Parser) noPrefixParseFnError(t lexer.TokenType) {
 	msg := fmt.Sprintf("no prefix parse function for %s found at line %d", t, p.curToken.Line)
 	p.errors = append(p.errors, msg)

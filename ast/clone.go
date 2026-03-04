@@ -188,6 +188,12 @@ func CloneNode(node Node) Node {
 			ReturnType: retType,
 			IsVariadic: n.IsVariadic,
 		}
+	case *ArrayInitExpr:
+		elements := make([]Expr, len(n.Elements))
+		for i, el := range n.Elements {
+			elements[i] = CloneNode(el).(Expr)
+		}
+		return &ArrayInitExpr{Token: n.Token, Elements: elements, EndSpan: n.EndSpan}
 	}
 
 	panic(fmt.Sprintf("CloneNode: unhandled node type %T", node))

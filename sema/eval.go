@@ -2,6 +2,8 @@ package sema
 
 import (
 	"fmt"
+	"strings"
+
 	"synovium/ast"
 	"synovium/lexer"
 )
@@ -14,19 +16,98 @@ type Evaluator struct {
 	LoopDepth          int
 	ExpectedReturnType TypeID
 	ExpectedYieldType  TypeID
+	SourceCode         string
 }
 
-func NewEvaluator(pool *TypePool) *Evaluator {
+func NewEvaluator(pool *TypePool, sourceCode string) *Evaluator {
 	return &Evaluator{
 		Pool:             pool,
 		Errors:           make([]string, 0),
 		CachedPrimitives: make(map[string]TypeID),
 		ComptimeCache:    make(map[string]TypeID),
+		SourceCode:       sourceCode,
 	}
 }
 
+// The new Rust-style error formatter!
 func (e *Evaluator) error(span lexer.Span, msg string) TypeID {
-	e.Errors = append(e.Errors, fmt.Sprintf("Error at bytes %d-%d: %s", span.Start, span.End, msg))
+	lines := strings.Split(e.SourceCode, "\n")
+
+	lineIdx := 0
+	colIdx := 0
+	errLineIdx := 0
+	errColStart := 0
+	errColEnd := 0
+
+	// 1. Map the byte span to exact line and column numbers
+	for i := 0; i <= len(e.SourceCode); i++ {
+		if i == span.Start {
+			errLineIdx = lineIdx
+			errColStart = colIdx
+		}
+		if i == span.End {
+			errColEnd = colIdx
+			// If the error spans multiple lines, cap the squiggly at the end of the first line
+			if lineIdx != errLineIdx {
+				errColEnd = len(lines[errLineIdx])
+			}
+			break
+		}
+		if i < len(e.SourceCode) {
+			if e.SourceCode[i] == '\n' {
+				lineIdx++
+				colIdx = 0
+			} else {
+				colIdx++
+			}
+		}
+	}
+
+	// 2. Build the visual snippet
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\n\033[31mError\033[0m: %s\n", msg))
+	sb.WriteString(fmt.Sprintf("  --> line %d:%d\n", errLineIdx+1, errColStart+1))
+
+	// Print Previous Line (Context)
+	if errLineIdx > 0 {
+		sb.WriteString(fmt.Sprintf("%4d | %s\n", errLineIdx, lines[errLineIdx-1]))
+	}
+
+	// Print Error Line
+	errLine := ""
+	if errLineIdx < len(lines) {
+		errLine = lines[errLineIdx]
+		sb.WriteString(fmt.Sprintf("%4d | %s\n", errLineIdx+1, errLine))
+	}
+
+	// Print Squiggly Line (^^^)
+	sb.WriteString("     | ")
+	// Preserve tabs vs spaces so the squiggly aligns perfectly!
+	for i := 0; i < errColStart && i < len(errLine); i++ {
+		if errLine[i] == '\t' {
+			sb.WriteString("\t")
+		} else {
+			sb.WriteString(" ")
+		}
+	}
+
+	squigglyLen := errColEnd - errColStart
+	if squigglyLen <= 0 {
+		squigglyLen = 1
+	}
+
+	sb.WriteString("\033[31;1m") // Bold Red
+	for i := 0; i < squigglyLen; i++ {
+		sb.WriteString("^")
+	}
+	sb.WriteString("\033[0m\n") // Reset
+
+	// Print Next Line (Context)
+	if errLineIdx < len(lines)-1 {
+		sb.WriteString(fmt.Sprintf("%4d | %s\n", errLineIdx+2, lines[errLineIdx+1]))
+	}
+
+	e.Errors = append(e.Errors, sb.String())
 	return 0
 }
 
@@ -157,6 +238,8 @@ func (e *Evaluator) evaluateInternal(node ast.Node, scope *Scope) TypeID {
 		return e.evaluateImplDecl(n, scope)
 	case *ast.MatchExpr:
 		return e.evaluateMatchExpr(n, scope)
+	case *ast.ArrayInitExpr:
+		return e.evaluateArrayInitExpr(n, scope)
 	}
 	return e.error(node.Span(), fmt.Sprintf("unsupported AST node for evaluation: %T", node))
 }

@@ -2,6 +2,8 @@ package parser
 
 import (
 	"strconv"
+	"strings"
+
 	"synovium/ast"
 	"synovium/lexer"
 )
@@ -217,16 +219,43 @@ func (p *Parser) parseExpressionList(endToken lexer.TokenType) []ast.Expr {
 	return list
 }
 
-// Stubs for future implementation
 func (p *Parser) parseFloatLiteral() ast.Expr {
-	return &ast.FloatLiteral{Token: p.curToken, Value: p.curToken.Literal}
+	lit := &ast.FloatLiteral{Token: p.curToken, Value: p.curToken.Literal}
+
+	// Validate that it is a mathematically sound IEEE-754 float
+	_, err := strconv.ParseFloat(p.curToken.Literal, 64)
+	if err != nil {
+		p.errors = append(p.errors, "invalid float literal: "+p.curToken.Literal)
+	}
+	return lit
 }
+
 func (p *Parser) parseStringLiteral() ast.Expr {
-	return &ast.StringLiteral{Token: p.curToken, Value: p.curToken.Literal}
+	val := p.curToken.Literal
+	// Process standard escape sequences
+	val = strings.ReplaceAll(val, `\n`, "\n")
+	val = strings.ReplaceAll(val, `\t`, "\t")
+	val = strings.ReplaceAll(val, `\r`, "\r")
+	val = strings.ReplaceAll(val, `\\`, "\\")
+	val = strings.ReplaceAll(val, `\"`, "\"")
+
+	return &ast.StringLiteral{Token: p.curToken, Value: val}
 }
+
+// --- NEW: Array Initialization Parser ---
+func (p *Parser) parseArrayInitExpression() ast.Expr {
+	expr := &ast.ArrayInitExpr{Token: p.curToken}
+
+	expr.Elements = p.parseExpressionList(lexer.RBRACKET)
+	expr.EndSpan = p.curToken.Span.End
+
+	return expr
+}
+
 func (p *Parser) parseCharLiteral() ast.Expr {
 	return &ast.CharLiteral{Token: p.curToken, Value: p.curToken.Literal}
 }
+
 func (p *Parser) parseBoolLiteral() ast.Expr {
 	return &ast.BoolLiteral{Token: p.curToken, Value: p.curTokenIs(lexer.TRUE)}
 }

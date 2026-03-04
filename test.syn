@@ -1,14 +1,81 @@
-// test.syn
-
+// 1. C-FFI Variadics (Body-less)
 fnc printf(fmt: str, ...);
 
+// 2. Tagged Unions (Enums)
+enum Action {
+    Spawn(i32),
+    Move(f64, f64),
+    Idle
+}
+
+// 3. Structs
 struct Entity {
     id: i32,
     health: f64,
     active: bln
 }
 
+// 4. Methods and Impl Blocks
+impl Entity {
+    fnc take_damage(self: *Self, amount: f64) {
+        self.health -= amount;
+        if self.health <= 0.0 {
+            self.active = false;
+        }
+    }
+}
+
+// 5. Generic Functions (Comptime AST Cloning)
+fnc identity(T: type, val: T) = T {
+    ret val;
+}
+
+// 6. Main Execution
 fnc main() {
-    boss: Entity = Entity { .id = 999, .health = 1000.5, .active = true };
-    printf("Boss spawned with ID: %d\n", boss.id);
+    // Variable declarations, Struct Init, Floats, Bools
+    boss: Entity = Entity {
+        .id = 999,
+        .health = 1000.5,
+        .active = true
+    };
+
+    // Prefix operators and Method calls
+    boss_ptr : *Entity := &boss;
+    boss_ptr.take_damage(250.0);
+
+    // Array Literals & Strings with Escapes!
+    names : [str; 2] := ["Neo", "Dr-42"];
+    history : [i32; 3] := [10, 20, 30];
+
+    // Control Flow: Match with Block Bubbling
+    status_code : i32 := match Action.Spawn(boss.id) {
+        Action.Spawn(id) -> {
+            printf("Spawned entity: %d\n", id);
+            1 // Bubbles to status_code
+        },
+        Action.Move(x, y) -> {
+            2 // Bubbles
+        },
+        Action.Idle -> {
+            0 // Bubbles
+        }
+    };
+
+    // Control Flow: Loops & If/Elif/Else
+    loop (i: i32 = 0...3) {
+        if i == 1 {
+            printf("Iteration 1\n");
+            0
+        } elif i == 2 {
+            brk;
+            0
+        } else {
+            printf("Other iteration\n");
+            0
+        }
+    }
+
+    // Generic Instantiation
+    final_val : i32 := identity(i32, 42);
+    printf("Final value: %d\n", final_val);
 }

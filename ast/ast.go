@@ -59,6 +59,7 @@ type Block struct {
 }
 
 func (b *Block) exprNode() {}
+
 func (b *Block) Span() lexer.Span {
 	return lexer.Span{Start: b.Token.Span.Start, End: b.CloseSpan.End}
 }
@@ -78,7 +79,9 @@ type VariableDecl struct {
 }
 
 func (v *VariableDecl) stmtNode() {}
+
 func (v *VariableDecl) declNode() {}
+
 func (v *VariableDecl) Span() lexer.Span {
 	return lexer.Span{Start: v.Name.Span().Start, End: v.Value.Span().End}
 }
@@ -89,7 +92,8 @@ type ExprStmt struct {
 	Value Expr
 }
 
-func (e *ExprStmt) stmtNode()        {}
+func (e *ExprStmt) stmtNode() {}
+
 func (e *ExprStmt) Span() lexer.Span { return e.Value.Span() }
 
 // ============================================================================
@@ -101,7 +105,8 @@ type Identifier struct {
 	Value string
 }
 
-func (i *Identifier) exprNode()        {}
+func (i *Identifier) exprNode() {}
+
 func (i *Identifier) Span() lexer.Span { return i.Token.Span }
 
 type IntLiteral struct {
@@ -122,11 +127,13 @@ type FunctionType struct {
 }
 
 func (f *FunctionType) typeNode() {}
+
 func (f *FunctionType) Span() lexer.Span {
 	return lexer.Span{Start: f.Token.Span.Start, End: f.EndSpan}
 }
 
-func (i *IntLiteral) exprNode()        {}
+func (i *IntLiteral) exprNode() {}
+
 func (i *IntLiteral) Span() lexer.Span { return i.Token.Span }
 
 // PrefixExpr handles: "!" | "~" | "-" | "*" | "&"
@@ -137,6 +144,7 @@ type PrefixExpr struct {
 }
 
 func (p *PrefixExpr) exprNode() {}
+
 func (p *PrefixExpr) Span() lexer.Span {
 	return lexer.Span{Start: p.Token.Span.Start, End: p.Right.Span().End}
 }
@@ -150,6 +158,7 @@ type InfixExpr struct {
 }
 
 func (i *InfixExpr) exprNode() {}
+
 func (i *InfixExpr) Span() lexer.Span {
 	return lexer.Span{Start: i.Left.Span().Start, End: i.Right.Span().End}
 }
@@ -174,6 +183,7 @@ type NamedType struct {
 }
 
 func (n *NamedType) typeNode() {}
+
 func (n *NamedType) Span() lexer.Span {
 	return lexer.Span{Start: n.Token.Span.Start, End: n.EndSpan}
 }
@@ -185,6 +195,7 @@ type PointerType struct {
 }
 
 func (p *PointerType) typeNode() {}
+
 func (p *PointerType) Span() lexer.Span {
 	return lexer.Span{Start: p.Token.Span.Start, End: p.Base.Span().End}
 }
@@ -196,6 +207,7 @@ type ReferenceType struct {
 }
 
 func (r *ReferenceType) typeNode() {}
+
 func (r *ReferenceType) Span() lexer.Span {
 	return lexer.Span{Start: r.Token.Span.Start, End: r.Base.Span().End}
 }
@@ -210,6 +222,7 @@ type ArrayType struct {
 }
 
 func (a *ArrayType) typeNode() {}
+
 func (a *ArrayType) Span() lexer.Span {
 	return lexer.Span{Start: a.Token.Span.Start, End: a.EndSpan}
 }
@@ -227,6 +240,7 @@ type CallExpr struct {
 }
 
 func (c *CallExpr) exprNode() {}
+
 func (c *CallExpr) Span() lexer.Span {
 	return lexer.Span{Start: c.Function.Span().Start, End: c.EndSpan}
 }
@@ -239,6 +253,7 @@ type FieldAccessExpr struct {
 }
 
 func (f *FieldAccessExpr) exprNode() {}
+
 func (f *FieldAccessExpr) Span() lexer.Span {
 	return lexer.Span{Start: f.Left.Span().Start, End: f.Field.Span().End}
 }
@@ -252,6 +267,7 @@ type IndexExpr struct {
 }
 
 func (i *IndexExpr) exprNode() {}
+
 func (i *IndexExpr) Span() lexer.Span {
 	return lexer.Span{Start: i.Left.Span().Start, End: i.EndSpan}
 }
@@ -265,7 +281,8 @@ type FloatLiteral struct {
 	Value string // Keeping as string to retain exact formatting before backend compilation
 }
 
-func (f *FloatLiteral) exprNode()        {}
+func (f *FloatLiteral) exprNode() {}
+
 func (f *FloatLiteral) Span() lexer.Span { return f.Token.Span }
 
 type StringLiteral struct {
@@ -273,7 +290,8 @@ type StringLiteral struct {
 	Value string
 }
 
-func (s *StringLiteral) exprNode()        {}
+func (s *StringLiteral) exprNode() {}
+
 func (s *StringLiteral) Span() lexer.Span { return s.Token.Span }
 
 type CharLiteral struct {
@@ -281,7 +299,8 @@ type CharLiteral struct {
 	Value string
 }
 
-func (c *CharLiteral) exprNode()        {}
+func (c *CharLiteral) exprNode() {}
+
 func (c *CharLiteral) Span() lexer.Span { return c.Token.Span }
 
 type BoolLiteral struct {
@@ -289,7 +308,8 @@ type BoolLiteral struct {
 	Value bool
 }
 
-func (b *BoolLiteral) exprNode()        {}
+func (b *BoolLiteral) exprNode() {}
+
 func (b *BoolLiteral) Span() lexer.Span { return b.Token.Span }
 
 // ============================================================================
@@ -308,6 +328,7 @@ type FunctionDecl struct {
 }
 
 func (f *FunctionDecl) declNode() {}
+
 func (f *FunctionDecl) Span() lexer.Span {
 	return lexer.Span{Start: f.Token.Span.Start, End: f.Body.Span().End}
 }
@@ -330,8 +351,10 @@ type StructDecl struct {
 	EndSpan int
 }
 
-func (s *StructDecl) declNode()        {}
-func (s *StructDecl) exprNode()        {}
+func (s *StructDecl) declNode() {}
+
+func (s *StructDecl) exprNode() {}
+
 func (s *StructDecl) Span() lexer.Span { return lexer.Span{Start: s.Token.Span.Start, End: s.EndSpan} }
 
 type FieldDecl struct {
@@ -348,8 +371,10 @@ type EnumDecl struct {
 	EndSpan  int
 }
 
-func (e *EnumDecl) declNode()        {}
-func (e *EnumDecl) exprNode()        {}
+func (e *EnumDecl) declNode() {}
+
+func (e *EnumDecl) exprNode() {}
+
 func (e *EnumDecl) Span() lexer.Span { return lexer.Span{Start: e.Token.Span.Start, End: e.EndSpan} }
 
 type VariantDecl struct {
@@ -366,8 +391,10 @@ type ImplDecl struct {
 	EndSpan int
 }
 
-func (i *ImplDecl) declNode()        {}
-func (i *ImplDecl) stmtNode()        {}
+func (i *ImplDecl) declNode() {}
+
+func (i *ImplDecl) stmtNode() {}
+
 func (i *ImplDecl) Span() lexer.Span { return lexer.Span{Start: i.Token.Span.Start, End: i.EndSpan} }
 
 // ============================================================================
@@ -384,6 +411,7 @@ type IfExpr struct {
 }
 
 func (i *IfExpr) exprNode() {}
+
 func (i *IfExpr) Span() lexer.Span {
 	end := i.Body.Span().End
 	if i.ElseBody != nil {
@@ -401,7 +429,8 @@ type MatchExpr struct {
 	EndSpan int
 }
 
-func (m *MatchExpr) exprNode()        {}
+func (m *MatchExpr) exprNode() {}
+
 func (m *MatchExpr) Span() lexer.Span { return lexer.Span{Start: m.Token.Span.Start, End: m.EndSpan} }
 
 type MatchArm struct {
@@ -422,6 +451,7 @@ type LoopExpr struct {
 }
 
 func (l *LoopExpr) exprNode() {}
+
 func (l *LoopExpr) Span() lexer.Span {
 	return lexer.Span{Start: l.Token.Span.Start, End: l.Body.Span().End}
 }
@@ -434,6 +464,7 @@ type StructInitExpr struct {
 }
 
 func (s *StructInitExpr) exprNode() {}
+
 func (s *StructInitExpr) Span() lexer.Span {
 	return lexer.Span{Start: s.Token.Span.Start, End: s.EndSpan}
 }
@@ -446,6 +477,7 @@ type StructInitField struct {
 }
 
 func (c *StructInitField) exprNode() {}
+
 func (c *StructInitField) Span() lexer.Span {
 	return lexer.Span{Start: c.Name.Span().Start, End: c.Value.Span().End}
 }
@@ -457,6 +489,7 @@ type CastExpr struct {
 }
 
 func (c *CastExpr) exprNode() {}
+
 func (c *CastExpr) Span() lexer.Span {
 	return lexer.Span{Start: c.Left.Span().Start, End: c.Type.Span().End}
 }
@@ -467,6 +500,7 @@ type BubbleExpr struct {
 }
 
 func (b *BubbleExpr) exprNode() {}
+
 func (b *BubbleExpr) Span() lexer.Span {
 	return lexer.Span{Start: b.Left.Span().Start, End: b.Token.Span.End}
 }
@@ -481,6 +515,7 @@ type ReturnStmt struct {
 }
 
 func (r *ReturnStmt) stmtNode() {}
+
 func (r *ReturnStmt) Span() lexer.Span {
 	if r.Value != nil {
 		return lexer.Span{Start: r.Token.Span.Start, End: r.Value.Span().End}
@@ -494,6 +529,7 @@ type YieldStmt struct {
 }
 
 func (y *YieldStmt) stmtNode() {}
+
 func (y *YieldStmt) Span() lexer.Span {
 	if y.Value != nil {
 		return lexer.Span{Start: y.Token.Span.Start, End: y.Value.Span().End}
@@ -505,5 +541,18 @@ type BreakStmt struct {
 	Token lexer.Token // 'brk'
 }
 
-func (b *BreakStmt) stmtNode()        {}
+func (b *BreakStmt) stmtNode() {}
+
 func (b *BreakStmt) Span() lexer.Span { return b.Token.Span }
+
+type ArrayInitExpr struct {
+	Token    lexer.Token // The '[' token
+	Elements []Expr
+	EndSpan  int
+}
+
+func (a *ArrayInitExpr) exprNode() {}
+
+func (a *ArrayInitExpr) Span() lexer.Span {
+	return lexer.Span{Start: a.Token.Span.Start, End: a.EndSpan}
+}

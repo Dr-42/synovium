@@ -3,9 +3,10 @@ package sema
 import (
 	"fmt"
 	"strings"
+	"testing"
+
 	"synovium/lexer"
 	"synovium/parser"
-	"testing"
 )
 
 // runSemaPipeline compiles a Synovium snippet strictly up to the Semantic Phase.
@@ -20,7 +21,7 @@ func runSemaPipeline(input string) (*Evaluator, *Scope, error) {
 
 	pool := NewTypePool()
 	globalScope := NewScope(nil)
-	evaluator := NewEvaluator(pool)
+	evaluator := NewEvaluator(pool, input)
 	evaluator.InjectBuiltins(globalScope)
 
 	dag := NewDAG(globalScope)

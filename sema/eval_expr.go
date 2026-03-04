@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+
 	"synovium/ast"
 )
 
@@ -171,4 +172,34 @@ func (e *Evaluator) getOrCreateArrayType(baseID TypeID, size uint64, isSlice boo
 
 	e.Pool.Types = append(e.Pool.Types, at)
 	return at.ID
+}
+
+// evaluateArrayInitExpr validates that all elements in an array literal share the exact same type.
+func (e *Evaluator) evaluateArrayInitExpr(node *ast.ArrayInitExpr, scope *Scope) TypeID {
+	if len(node.Elements) == 0 {
+		return e.error(node.Span(), "empty array literals currently require explicit type annotations (not yet implemented)")
+	}
+
+	// 1. Establish the base type from the first element
+	baseTypeID := e.Evaluate(node.Elements[0], scope)
+	if baseTypeID == 0 {
+		return 0
+	}
+
+	// 2. Enforce homogenous types across the entire array
+	for i := 1; i < len(node.Elements); i++ {
+		elemTypeID := e.Evaluate(node.Elements[i], scope)
+		if elemTypeID == 0 {
+			return 0
+		}
+
+		if !e.typesMatch(baseTypeID, elemTypeID) {
+			baseName := e.Pool.Types[baseTypeID].Name
+			elemName := e.Pool.Types[elemTypeID].Name
+			return e.error(node.Elements[i].Span(), fmt.Sprintf("array element type mismatch: expected %s, got %s", baseName, elemName))
+		}
+	}
+
+	// 3. Return a mathematically sound, statically sized array type
+	return e.getOrCreateArrayType(baseTypeID, uint64(len(node.Elements)), false)
 }
