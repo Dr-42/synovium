@@ -232,7 +232,11 @@ func (p *Parser) parseFloatLiteral() ast.Expr {
 
 func (p *Parser) parseStringLiteral() ast.Expr {
 	val := p.curToken.Literal
-	// Process standard escape sequences
+
+	if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+		val = val[1 : len(val)-1]
+	}
+
 	val = strings.ReplaceAll(val, `\n`, "\n")
 	val = strings.ReplaceAll(val, `\t`, "\t")
 	val = strings.ReplaceAll(val, `\r`, "\r")

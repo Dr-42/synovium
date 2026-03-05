@@ -16,8 +16,9 @@ type Builder struct {
 	nextStringID int
 	currentFunc  string
 
-	Locals          map[string]string // Tracks variable allocations
-	StringConstants []string          // Hoists literal strings to global scope
+	Locals          map[string]string
+	StringConstants []string
+	LoopExits       []string // <-- NEW: Tracks active loop exit blocks for `brk`
 }
 
 func NewBuilder(pool *sema.TypePool) *Builder {
@@ -49,13 +50,35 @@ func (b *Builder) Generate(program []ast.Decl) string {
 	b.emitTypeDeclarations()
 	b.EmitLine("")
 
+	// 1. Top-Level Functions & Impl Methods
 	for _, decl := range program {
 		if fn, ok := decl.(*ast.FunctionDecl); ok {
-			b.emitFunction(fn)
+			b.emitFunction(fn, b.Pool.NodeTypes[fn])
+		} else if impl, ok := decl.(*ast.ImplDecl); ok {
+			// THE FIX: Safely find the Target Struct by Name
+			for _, t := range b.Pool.Types {
+				if t.Name == impl.Target.Value {
+					for _, fn := range impl.Methods {
+						if methodID, exists := t.Methods[fn.Name.Value]; exists {
+							b.emitFunction(fn, methodID)
+						}
+					}
+					break
+				}
+			}
 		}
 	}
 
-	// LLVM allows globals at the bottom! Print hoisted strings here.
+	// 2. Generic Instantiations
+	for _, t := range b.Pool.Types {
+		if (t.Mask&sema.MaskIsFunction) != 0 && strings.Contains(t.Name, "_inst_") {
+			if fn, ok := t.Executable.(*ast.FunctionDecl); ok {
+				b.emitFunction(fn, t.ID)
+			}
+		}
+	}
+
+	// 3. Global Strings
 	for _, strDef := range b.StringConstants {
 		b.EmitLine(strDef)
 	}

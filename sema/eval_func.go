@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+
 	"synovium/ast"
 )
 
@@ -223,8 +224,10 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			FuncParams: concreteParams,
 			FuncReturn: concreteRet,
 			IsVariadic: decl.IsVariadic,
+			Executable: decl,
 		}
 		e.Pool.Types = append(e.Pool.Types, specializedFunc)
+		e.Pool.NodeTypes[node.Function] = specializedFunc.ID
 
 		return concreteRet
 	}

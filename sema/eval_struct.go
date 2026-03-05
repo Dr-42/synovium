@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+
 	"synovium/ast"
 )
 
@@ -135,5 +136,12 @@ func (e *Evaluator) evaluateFieldAccess(node *ast.FieldAccessExpr, scope *Scope)
 		return constructorType.ID
 	}
 
+	// allMethods := make([]string, 0, len(leftType.Methods))
+	// methodStr := ""
+	// for _, methodName := range allMethods {
+	// 	methodStr += "\n\t" + methodName
+	// }
+	//
+	// return e.error(node.Field.Span(), "type '"+leftType.Name+"' has no field, method, or variant named '"+node.Field.Value+"'"+"Existing methods are"+methodStr)
 	return e.error(node.Field.Span(), "type '"+leftType.Name+"' has no field, method, or variant named '"+node.Field.Value+"'")
 }

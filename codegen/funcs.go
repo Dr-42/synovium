@@ -2,22 +2,38 @@ package codegen
 
 import (
 	"strings"
+
 	"synovium/ast"
+	"synovium/sema"
 )
 
-func (b *Builder) emitFunction(node *ast.FunctionDecl) {
-	typeID := b.Pool.NodeTypes[node]
+func (b *Builder) emitFunction(node *ast.FunctionDecl, typeID sema.TypeID) {
 	if typeID == 0 {
 		return
 	}
 
 	funcType := b.Pool.Types[typeID]
-	retLLVM := b.GetLLVMType(funcType.FuncReturn)
 
+	// THE FIX: Skip Generic Templates (but allow instantiations to pass!)
+	if !strings.Contains(funcType.Name, "_inst_") {
+		for _, p := range funcType.FuncParams {
+			if b.Pool.Types[p].Name == "type" {
+				return
+			}
+		}
+	}
+
+	retLLVM := b.GetLLVMType(funcType.FuncReturn)
 	var params []string
+
 	for i, paramNode := range node.Parameters {
-		// THE FIX: Directly access the mathematically proven parameters!
 		paramTypeID := funcType.FuncParams[i]
+
+		// THE FIX: Strip Ghost Parameters
+		if b.Pool.Types[paramTypeID].Name == "type" {
+			continue
+		}
+
 		paramLLVM := b.GetLLVMType(paramTypeID)
 
 		if node.Body == nil {
@@ -36,6 +52,9 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl) {
 	}
 
 	funcName := node.Name.Value
+	if strings.Contains(funcType.Name, "_inst_") {
+		funcName = funcType.Name
+	}
 
 	if node.Body == nil {
 		b.EmitLine("declare %s @%s(%s)", retLLVM, funcName, strings.Join(params, ", "))
@@ -46,17 +65,22 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl) {
 	b.EmitLine("define %s @%s(%s) {", retLLVM, funcName, strings.Join(params, ", "))
 	b.EmitLine("entry:")
 
-	// --- Push parameters to the stack so they can be mutated! ---
 	b.Locals = make(map[string]string)
 	for i, paramNode := range node.Parameters {
+		paramTypeID := funcType.FuncParams[i]
+		if b.Pool.Types[paramTypeID].Name == "type" {
+			continue // Strip stack alloc for ghosts!
+		}
+
 		pName := paramNode.Name.Value
-		pLLVM := b.GetLLVMType(funcType.FuncParams[i])
-		b.EmitLine("  %%%s = alloca %s", pName, pLLVM)
-		b.EmitLine("  store %s %%%s, %s* %%%s", pLLVM, pName, pLLVM, pName)
-		b.Locals[pName] = "%" + pName
+		pLLVM := b.GetLLVMType(paramTypeID)
+		allocName := pName + ".addr"
+
+		b.EmitLine("  %%%s = alloca %s", allocName, pLLVM)
+		b.EmitLine("  store %s %%%s, %s* %%%s", pLLVM, pName, pLLVM, allocName)
+		b.Locals[pName] = "%" + allocName
 	}
 
-	// --- Ignite the Core Engine ---
 	b.emitBlock(node.Body)
 
 	if retLLVM == "void" {
