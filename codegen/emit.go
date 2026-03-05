@@ -28,7 +28,7 @@ func (b *Builder) emitBlock(block *ast.Block) string {
 		case *ast.ExprStmt:
 			lastVal = b.emitExpression(n.Value)
 
-		// --- NEW: Hard Return Statements ---
+			// --- NEW: Hard Return Statements ---
 		case *ast.ReturnStmt:
 			if n.Value != nil {
 				valReg := b.emitExpression(n.Value)
@@ -37,13 +37,12 @@ func (b *Builder) emitBlock(block *ast.Block) string {
 			} else {
 				b.EmitLine("  ret void")
 			}
-			// LLVM blocks end at 'ret', so any remaining statements in this block are dead code.
-			return ""
+			return "<terminated>" // <-- THE FIX
 		case *ast.BreakStmt:
 			if len(b.LoopExits) > 0 {
 				b.EmitLine("  br label %%%s", b.LoopExits[len(b.LoopExits)-1])
 			}
-			return ""
+			return "<terminated>" // <-- THE FIX
 		}
 	}
 
@@ -494,21 +493,28 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			// Generate the true branch
 			b.EmitLine("\n%s:", bodyLbl)
 			bodyVal := b.emitBlock(bodies[i])
-			if llvmType != "void" && bodyVal != "" {
-				b.EmitLine("  store %s %s, %s* %s", llvmType, bodyVal, llvmType, resultPtr)
+
+			// THE FIX: Do not emit a merge jump if the block has a return/break!
+			if bodyVal != "<terminated>" {
+				if llvmType != "void" && bodyVal != "" {
+					b.EmitLine("  store %s %s, %s* %s", llvmType, bodyVal, llvmType, resultPtr)
+				}
+				b.EmitLine("  br label %%%s", mergeLbl)
 			}
-			b.EmitLine("  br label %%%s", mergeLbl)
 		}
 
-		// The final fallback (Else branch)
 		b.EmitLine("\n%s:", nextCondLbl)
 		if n.ElseBody != nil {
 			elseVal := b.emitBlock(n.ElseBody)
-			if llvmType != "void" && elseVal != "" {
-				b.EmitLine("  store %s %s, %s* %s", llvmType, elseVal, llvmType, resultPtr)
+			if elseVal != "<terminated>" {
+				if llvmType != "void" && elseVal != "" {
+					b.EmitLine("  store %s %s, %s* %s", llvmType, elseVal, llvmType, resultPtr)
+				}
+				b.EmitLine("  br label %%%s", mergeLbl)
 			}
+		} else {
+			b.EmitLine("  br label %%%s", mergeLbl)
 		}
-		b.EmitLine("  br label %%%s", mergeLbl)
 
 		// The Merge Block!
 		b.EmitLine("\n%s:", mergeLbl)
@@ -561,19 +567,23 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		}
 
 		b.EmitLine("\n%s:", bodyLbl)
-		b.emitBlock(n.Body)
+		bodyVal := b.emitBlock(n.Body)
 
-		// 3. Loop Increment (`i++`)
-		if loopVar != "" {
-			currVal := b.NextReg()
-			b.EmitLine("  %s = load %s, %s* %s", currVal, loopLLVM, loopLLVM, loopVar)
-			nextVal := b.NextReg()
-			b.EmitLine("  %s = add %s %s, 1", nextVal, loopLLVM, currVal)
-			b.EmitLine("  store %s %s, %s* %s", loopLLVM, nextVal, loopLLVM, loopVar)
+		if bodyVal != "<terminated>" {
+			// 3. Loop Increment (`i++`)
+			if loopVar != "" {
+				rawName := strings.TrimPrefix(loopVar, "%")
+				currVal := "%" + rawName + "_curr"
+				nextVal := "%" + rawName + "_next"
+
+				b.EmitLine("  %s = load %s, %s* %s", currVal, loopLLVM, loopLLVM, loopVar)
+				b.EmitLine("  %s = add %s %s, 1", nextVal, loopLLVM, currVal)
+				b.EmitLine("  store %s %s, %s* %s", loopLLVM, nextVal, loopLLVM, loopVar)
+			}
+			b.EmitLine("  br label %%%s", condLbl) // Loop back
 		}
 
-		b.EmitLine("  br label %%%s", condLbl) // Loop back
-		b.EmitLine("\n%s:", exitLbl)           // Break target
+		b.EmitLine("\n%s:", exitLbl) // Break target
 
 		b.LoopExits = b.LoopExits[:len(b.LoopExits)-1]
 		return ""
@@ -668,10 +678,12 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			}
 
 			bodyVal := b.emitBlock(arm.Body)
-			if llvmType != "void" && bodyVal != "" {
-				b.EmitLine("  store %s %s, %s* %s", llvmType, bodyVal, llvmType, resultPtr)
+			if bodyVal != "<terminated>" {
+				if llvmType != "void" && bodyVal != "" {
+					b.EmitLine("  store %s %s, %s* %s", llvmType, bodyVal, llvmType, resultPtr)
+				}
+				b.EmitLine("  br label %%%s", mergeLbl)
 			}
-			b.EmitLine("  br label %%%s", mergeLbl)
 		}
 
 		b.EmitLine("\n%s:", defaultLbl)

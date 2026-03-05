@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 
@@ -91,6 +92,49 @@ func main() {
 
 	fmt.Println(llvmIR)
 	fmt.Println("--------------------------------------------------")
+
+	// ==========================================
+	// 🚀 STAGE 8: NATIVE COMPILATION & EXECUTION
+	// ==========================================
+	fmt.Println("🚀 COMPILING TO NATIVE BINARY...")
+
+	// 1. Write the LLVM IR to a file
+	llFilename := "out.ll"
+	err = os.WriteFile(llFilename, []byte(llvmIR), 0644)
+	if err != nil {
+		fmt.Printf("❌ Failed to write LLVM IR: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 2. Invoke Clang to compile the LLVM IR into a native executable
+	exeFilename := "./app"
+	cmd := exec.Command("clang", "-Wno-override-module", "-o", exeFilename, llFilename)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+
+	err = cmd.Run()
+	if err != nil {
+		fmt.Printf("❌ Clang compilation failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ Compilation successful! Executing binary...\n")
+	fmt.Println("================ PROGRAM OUTPUT ================")
+
+	// 3. Run the compiled binary!
+	runCmd := exec.Command(exeFilename)
+	runCmd.Stderr = os.Stderr
+	runCmd.Stdout = os.Stdout
+
+	err = runCmd.Run()
+	if err != nil {
+		fmt.Printf("\n❌ Execution failed: %v\n", err)
+	}
+
+	fmt.Println("\n================================================")
+
+	// Optional: Clean up the generated files
+	os.Remove(llFilename)
+	// os.Remove(exeFilename)
 }
 
 // --- AST PRINTING HELPERS ---

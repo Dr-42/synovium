@@ -12,6 +12,7 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl, typeID sema.TypeID) {
 		return
 	}
 
+	b.nextRegID = 1
 	funcType := b.Pool.Types[typeID]
 
 	// THE FIX: Skip Generic Templates (but allow instantiations to pass!)
@@ -69,9 +70,8 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl, typeID sema.TypeID) {
 	for i, paramNode := range node.Parameters {
 		paramTypeID := funcType.FuncParams[i]
 		if b.Pool.Types[paramTypeID].Name == "type" {
-			continue // Strip stack alloc for ghosts!
+			continue
 		}
-
 		pName := paramNode.Name.Value
 		pLLVM := b.GetLLVMType(paramTypeID)
 		allocName := pName + ".addr"
@@ -81,13 +81,17 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl, typeID sema.TypeID) {
 		b.Locals[pName] = "%" + allocName
 	}
 
-	b.emitBlock(node.Body)
+	bodyVal := b.emitBlock(node.Body)
 
-	if retLLVM == "void" {
-		b.EmitLine("  ret void")
-	} else {
-		b.EmitLine("  ret %s undef", retLLVM)
+	// --- THE FIX: Only emit default return if block didn't early-terminate ---
+	if bodyVal != "<terminated>" {
+		if retLLVM == "void" {
+			b.EmitLine("  ret void")
+		} else {
+			b.EmitLine("  ret %s undef", retLLVM)
+		}
 	}
+
 	b.EmitLine("}")
 	b.EmitLine("")
 }

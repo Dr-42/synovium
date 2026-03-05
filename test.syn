@@ -62,7 +62,7 @@ fnc unwrap_or(T: type, val: *T, fallback: T) = T {
 // ==========================================
 // 6. MAIN EXECUTION & CONTROL FLOW
 // ==========================================
-fnc main() {
+fnc main() = i32 {
     // Variable Decls, Struct Init, Enum Constructors
     p: Player = Player {
         .id = 42,
@@ -95,4 +95,5 @@ fnc main() {
     final_score : i32 := p.score + unwrap_or(i32, bonus_ptr, 0);
 
     printf("Final Score: %d\n", final_score);
+    ret 0;
 }
