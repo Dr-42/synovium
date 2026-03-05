@@ -124,6 +124,7 @@ func main() {
 	runCmd := exec.Command(exeFilename)
 	runCmd.Stderr = os.Stderr
 	runCmd.Stdout = os.Stdout
+	runCmd.Stdin = os.Stdin
 
 	err = runCmd.Run()
 	if err != nil {

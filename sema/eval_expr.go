@@ -177,7 +177,7 @@ func (e *Evaluator) getOrCreateArrayType(baseID TypeID, size uint64, isSlice boo
 // evaluateArrayInitExpr validates that all elements in an array literal share the exact same type.
 func (e *Evaluator) evaluateArrayInitExpr(node *ast.ArrayInitExpr, scope *Scope) TypeID {
 	if len(node.Elements) == 0 {
-		return e.error(node.Span(), "empty array literals currently require explicit type annotations (not yet implemented)")
+		return e.error(node.Span(), "empty array literals currently require explicit type annotations")
 	}
 
 	// 1. Establish the base type from the first element
@@ -186,20 +186,40 @@ func (e *Evaluator) evaluateArrayInitExpr(node *ast.ArrayInitExpr, scope *Scope)
 		return 0
 	}
 
-	// 2. Enforce homogenous types across the entire array
-	for i := 1; i < len(node.Elements); i++ {
-		elemTypeID := e.Evaluate(node.Elements[i], scope)
-		if elemTypeID == 0 {
+	var size uint64
+
+	// --- NEW: Handle [val ; count] Repeat Arrays ---
+	if node.Count != nil {
+		countTypeID := e.Evaluate(node.Count, scope)
+		if countTypeID == 0 {
 			return 0
 		}
+		if (e.Pool.Types[countTypeID].Mask & MaskIsNumeric) == 0 {
+			return e.error(node.Count.Span(), "array repeat count must be numeric")
+		}
 
-		if !e.typesMatch(baseTypeID, elemTypeID) {
-			baseName := e.Pool.Types[baseTypeID].Name
-			elemName := e.Pool.Types[elemTypeID].Name
-			return e.error(node.Elements[i].Span(), fmt.Sprintf("array element type mismatch: expected %s, got %s", baseName, elemName))
+		if intLit, ok := node.Count.(*ast.IntLiteral); ok {
+			size = uint64(intLit.Value)
+		} else {
+			return e.error(node.Count.Span(), "array repeat count must be an integer literal")
+		}
+	} else {
+		size = uint64(len(node.Elements))
+		// 2. Enforce homogenous types across the entire array
+		for i := 1; i < len(node.Elements); i++ {
+			elemTypeID := e.Evaluate(node.Elements[i], scope)
+			if elemTypeID == 0 {
+				return 0
+			}
+
+			if !e.typesMatch(baseTypeID, elemTypeID) {
+				baseName := e.Pool.Types[baseTypeID].Name
+				elemName := e.Pool.Types[elemTypeID].Name
+				return e.error(node.Elements[i].Span(), fmt.Sprintf("array element type mismatch: expected %s, got %s", baseName, elemName))
+			}
 		}
 	}
 
 	// 3. Return a mathematically sound, statically sized array type
-	return e.getOrCreateArrayType(baseTypeID, uint64(len(node.Elements)), false)
+	return e.getOrCreateArrayType(baseTypeID, size, false)
 }

@@ -259,12 +259,40 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			} else {
 				b.EmitLine("  %s = icmp eq %s %s, %s", reg, llvmType, leftReg, rightReg)
 			}
+		case "!=":
+			if isFloat {
+				b.EmitLine("  %s = fcmp one %s %s, %s", reg, llvmType, leftReg, rightReg)
+			} else {
+				b.EmitLine("  %s = icmp ne %s %s, %s", reg, llvmType, leftReg, rightReg)
+			}
+		case "<":
+			if isFloat {
+				b.EmitLine("  %s = fcmp olt %s %s, %s", reg, llvmType, leftReg, rightReg)
+			} else {
+				b.EmitLine("  %s = icmp slt %s %s, %s", reg, llvmType, leftReg, rightReg)
+			}
 		case "<=":
 			if isFloat {
 				b.EmitLine("  %s = fcmp ole %s %s, %s", reg, llvmType, leftReg, rightReg)
 			} else {
 				b.EmitLine("  %s = icmp sle %s %s, %s", reg, llvmType, leftReg, rightReg)
 			}
+		case ">":
+			if isFloat {
+				b.EmitLine("  %s = fcmp ogt %s %s, %s", reg, llvmType, leftReg, rightReg)
+			} else {
+				b.EmitLine("  %s = icmp sgt %s %s, %s", reg, llvmType, leftReg, rightReg)
+			}
+		case ">=":
+			if isFloat {
+				b.EmitLine("  %s = fcmp oge %s %s, %s", reg, llvmType, leftReg, rightReg)
+			} else {
+				b.EmitLine("  %s = icmp sge %s %s, %s", reg, llvmType, leftReg, rightReg)
+			}
+		case "&&":
+			b.EmitLine("  %s = and i1 %s, %s", reg, leftReg, rightReg)
+		case "||":
+			b.EmitLine("  %s = or i1 %s, %s", reg, leftReg, rightReg)
 		}
 		return reg
 
@@ -441,22 +469,55 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		typeID := b.Pool.NodeTypes[n]
 		llvmType := b.GetLLVMType(typeID) // e.g. [3 x i32]
 
-		// 1. Allocate the array buffer on the stack
 		arrReg := b.NextReg()
 		b.EmitLine("  %s = alloca %s", arrReg, llvmType)
 
 		elemTypeID := b.Pool.Types[typeID].BaseType
 		elemLLVM := b.GetLLVMType(elemTypeID)
 
-		// 2. Populate the elements
-		for i, el := range n.Elements {
-			valReg := b.emitExpression(el)
+		if n.Count != nil {
+			// --- NEW: Generate an LLVM loop for repeat initialization ---
+			valReg := b.emitExpression(n.Elements[0])
+			capacity := b.Pool.Types[typeID].Capacity
+
+			idxPtr := b.NextReg()
+			b.EmitLine("  %s = alloca i32", idxPtr)
+			b.EmitLine("  store i32 0, i32* %s", idxPtr)
+
+			condLbl := b.NextLabel()
+			bodyLbl := b.NextLabel()
+			exitLbl := b.NextLabel()
+
+			b.EmitLine("  br label %%%s", condLbl)
+			b.EmitLine("\n%s:", condLbl)
+
+			idxVal := b.NextReg()
+			b.EmitLine("  %s = load i32, i32* %s", idxVal, idxPtr)
+			cmpReg := b.NextReg()
+			b.EmitLine("  %s = icmp slt i32 %s, %d", cmpReg, idxVal, capacity)
+			b.EmitLine("  br i1 %s, label %%%s, label %%%s", cmpReg, bodyLbl, exitLbl)
+
+			b.EmitLine("\n%s:", bodyLbl)
 			ptrReg := b.NextReg()
-			b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 %d", ptrReg, llvmType, llvmType, arrReg, i)
+			b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 %s", ptrReg, llvmType, llvmType, arrReg, idxVal)
 			b.EmitLine("  store %s %s, %s* %s", elemLLVM, valReg, elemLLVM, ptrReg)
+
+			nextIdx := b.NextReg()
+			b.EmitLine("  %s = add i32 %s, 1", nextIdx, idxVal)
+			b.EmitLine("  store i32 %s, i32* %s", nextIdx, idxPtr)
+			b.EmitLine("  br label %%%s", condLbl)
+
+			b.EmitLine("\n%s:", exitLbl)
+		} else {
+			// Standard Population
+			for i, el := range n.Elements {
+				valReg := b.emitExpression(el)
+				ptrReg := b.NextReg()
+				b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 %d", ptrReg, llvmType, llvmType, arrReg, i)
+				b.EmitLine("  store %s %s, %s* %s", elemLLVM, valReg, elemLLVM, ptrReg)
+			}
 		}
 
-		// 3. Return the loaded array
 		valReg := b.NextReg()
 		b.EmitLine("  %s = load %s, %s* %s", valReg, llvmType, llvmType, arrReg)
 		return valReg
@@ -535,11 +596,13 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		var loopVar string
 		var loopEndReg string
 		var loopLLVM string
+		isRange := false
 
 		// 1. Intercept `i = 0...3` and initialize `i = 0`
 		if n.Condition != nil {
 			if vDecl, ok := n.Condition.(*ast.VariableDecl); ok {
 				if inf, ok := vDecl.Value.(*ast.InfixExpr); ok && inf.Operator == "..." {
+					isRange = true
 					b.emitBlock(&ast.Block{Statements: []ast.Stmt{&ast.VariableDecl{
 						Name: vDecl.Name, Type: vDecl.Type, Value: inf.Left,
 					}}})
@@ -555,14 +618,19 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		b.EmitLine("  br label %%%s", condLbl)
 		b.EmitLine("\n%s:", condLbl)
 
-		// 2. Loop Bounds Check (`i < 3`)
-		if loopVar != "" {
+		// 2. Evaluate Loop Bounds or Boolean Condition dynamically!
+		if isRange {
 			currVal := b.NextReg()
 			b.EmitLine("  %s = load %s, %s* %s", currVal, loopLLVM, loopLLVM, loopVar)
 			cmpReg := b.NextReg()
 			b.EmitLine("  %s = icmp slt %s %s, %s", cmpReg, loopLLVM, currVal, loopEndReg)
 			b.EmitLine("  br i1 %s, label %%%s, label %%%s", cmpReg, bodyLbl, exitLbl)
+		} else if n.Condition != nil {
+			condExpr := n.Condition.(ast.Expr)
+			condReg := b.emitExpression(condExpr)
+			b.EmitLine("  br i1 %s, label %%%s, label %%%s", condReg, bodyLbl, exitLbl)
 		} else {
+			// Infinite loop fallback
 			b.EmitLine("  br label %%%s", bodyLbl)
 		}
 
@@ -570,8 +638,8 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		bodyVal := b.emitBlock(n.Body)
 
 		if bodyVal != "<terminated>" {
-			// 3. Loop Increment (`i++`)
-			if loopVar != "" {
+			// 3. Loop Increment (`i++`) ONLY for range loops
+			if isRange {
 				rawName := strings.TrimPrefix(loopVar, "%")
 				currVal := "%" + rawName + "_curr"
 				nextVal := "%" + rawName + "_next"
@@ -584,7 +652,6 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		}
 
 		b.EmitLine("\n%s:", exitLbl) // Break target
-
 		b.LoopExits = b.LoopExits[:len(b.LoopExits)-1]
 		return ""
 

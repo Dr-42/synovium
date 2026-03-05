@@ -193,7 +193,11 @@ func CloneNode(node Node) Node {
 		for i, el := range n.Elements {
 			elements[i] = CloneNode(el).(Expr)
 		}
-		return &ArrayInitExpr{Token: n.Token, Elements: elements, EndSpan: n.EndSpan}
+		var count Expr
+		if n.Count != nil {
+			count = CloneNode(n.Count).(Expr)
+		}
+		return &ArrayInitExpr{Token: n.Token, Elements: elements, Count: count, EndSpan: n.EndSpan}
 	}
 
 	panic(fmt.Sprintf("CloneNode: unhandled node type %T", node))

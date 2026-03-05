@@ -548,6 +548,7 @@ func (b *BreakStmt) Span() lexer.Span { return b.Token.Span }
 type ArrayInitExpr struct {
 	Token    lexer.Token // The '[' token
 	Elements []Expr
+	Count    Expr
 	EndSpan  int
 }
 

@@ -250,9 +250,38 @@ func (p *Parser) parseStringLiteral() ast.Expr {
 func (p *Parser) parseArrayInitExpression() ast.Expr {
 	expr := &ast.ArrayInitExpr{Token: p.curToken}
 
-	expr.Elements = p.parseExpressionList(lexer.RBRACKET)
-	expr.EndSpan = p.curToken.Span.End
+	if p.peekTokenIs(lexer.RBRACKET) {
+		p.nextToken()
+		expr.EndSpan = p.curToken.Span.End
+		return expr
+	}
 
+	p.nextToken() // move to first element
+	firstEl := p.parseExpression(LOWEST)
+
+	// --- NEW: Array Repeat Syntax `[0 ; 50]` ---
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		expr.Elements = []ast.Expr{firstEl}
+		p.nextToken() // move to ';'
+		p.nextToken() // move to count expression
+		expr.Count = p.parseExpression(LOWEST)
+		if !p.expectPeek(lexer.RBRACKET) {
+			return nil
+		}
+	} else {
+		// Standard List Syntax `[1, 2, 3]`
+		expr.Elements = append(expr.Elements, firstEl)
+		for p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+			p.nextToken()
+			expr.Elements = append(expr.Elements, p.parseExpression(LOWEST))
+		}
+		if !p.expectPeek(lexer.RBRACKET) {
+			return nil
+		}
+	}
+
+	expr.EndSpan = p.curToken.Span.End
 	return expr
 }
 

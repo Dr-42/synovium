@@ -2,6 +2,7 @@
 // 1. EXTERNAL FFI & VARIADICS
 // ==========================================
 fnc printf(fmt: str, ...);
+fnc scanf(fmt: str, ...);
 
 // ==========================================
 // 2. TAGGED UNIONS (ENUMS) & PAYLOADS
@@ -95,5 +96,13 @@ fnc main() = i32 {
     final_score : i32 := p.score + unwrap_or(i32, bonus_ptr, 0);
 
     printf("Final Score: %d\n", final_score);
+
+    num : i32 = 0;
+    num2 : i32 = 0;
+    printf("Enter a number: ");
+    scanf("%d", &num);
+    printf("Enter another number: ");
+    scanf("%d", &num2);
+    printf("Sum: %d\n", num + num2);
     ret 0;
 }
