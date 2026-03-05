@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"synovium/ast"
@@ -83,6 +84,20 @@ func (b *Builder) emitLValue(node ast.Expr) (string, string) {
 		b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 %d", ptrReg, structLLVM, structLLVM, structPtr, fieldIdx)
 		return ptrReg, b.GetLLVMType(b.Pool.Types[leftTypeID].FieldLayout[fieldIdx])
 
+	case *ast.IndexExpr:
+		arrPtr, arrLLVM := b.emitLValue(n.Left)
+		idxReg := b.emitExpression(n.Index)
+		idxLLVM := b.GetLLVMType(b.Pool.NodeTypes[n.Index])
+
+		arrTypeID := b.Pool.NodeTypes[n.Left]
+		elemTypeID := b.Pool.Types[arrTypeID].BaseType
+		elemLLVM := b.GetLLVMType(elemTypeID)
+
+		ptrReg := b.NextReg()
+		// i32 0 steps through the array pointer, the second offset steps to the index!
+		b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, %s %s", ptrReg, arrLLVM, arrLLVM, arrPtr, idxLLVM, idxReg)
+		return ptrReg, elemLLVM
+
 	case *ast.PrefixExpr:
 		if n.Operator == "*" {
 			// Dereferencing a pointer literally yields the pointer's value as an address
@@ -130,6 +145,12 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 	case *ast.Identifier:
 		ptrReg := b.Locals[n.Value]
 		llvmType := b.GetLLVMType(b.Pool.NodeTypes[n])
+		reg := b.NextReg()
+		b.EmitLine("  %s = load %s, %s* %s", reg, llvmType, llvmType, ptrReg)
+		return reg
+
+	case *ast.IndexExpr:
+		ptrReg, llvmType := b.emitLValue(n)
 		reg := b.NextReg()
 		b.EmitLine("  %s = load %s, %s* %s", reg, llvmType, llvmType, ptrReg)
 		return reg
@@ -249,7 +270,38 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		return reg
 
 	case *ast.FieldAccessExpr:
-		// Reading a field as an R-value. Get its pointer, then load it!
+		leftTypeID := b.Pool.NodeTypes[n.Left]
+		leftType := b.Pool.Types[leftTypeID]
+
+		// 1. Is it a Payload-less Enum Variant? (e.g. State.Invincible)
+		if payloadTypes, isVariant := leftType.Variants[n.Field.Value]; isVariant && len(payloadTypes) == 0 {
+			enumLLVM := b.GetLLVMType(leftType.ID)
+
+			var variantNames []string
+			for k := range leftType.Variants {
+				variantNames = append(variantNames, k)
+			}
+			sort.Strings(variantNames)
+			tagIndex := 0
+			for idx, name := range variantNames {
+				if name == n.Field.Value {
+					tagIndex = idx
+					break
+				}
+			}
+
+			enumReg := b.NextReg()
+			b.EmitLine("  %s = alloca %s", enumReg, enumLLVM)
+			tagPtr := b.NextReg()
+			b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 0", tagPtr, enumLLVM, enumLLVM, enumReg)
+			b.EmitLine("  store i8 %d, i8* %s", tagIndex, tagPtr)
+
+			valReg := b.NextReg()
+			b.EmitLine("  %s = load %s, %s* %s", valReg, enumLLVM, enumLLVM, enumReg)
+			return valReg
+		}
+
+		// 2. Otherwise, reading a standard struct field as an R-value.
 		ptrReg, llvmType := b.emitLValue(n)
 		reg := b.NextReg()
 		b.EmitLine("  %s = load %s, %s* %s", reg, llvmType, llvmType, ptrReg)
@@ -264,7 +316,6 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			funcName = id.Value
 		} else if fa, ok := n.Function.(*ast.FieldAccessExpr); ok {
 			funcName = fa.Field.Value
-
 			leftTypeID := b.Pool.NodeTypes[fa.Left]
 			leftType := b.Pool.Types[leftTypeID]
 
@@ -273,7 +324,6 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 				actualObjType = b.Pool.Types[actualObjType.BaseType]
 			}
 
-			// 1. Is it a Method Call or an Enum Constructor?
 			if _, isMethod := actualObjType.Methods[fa.Field.Value]; isMethod {
 				argOffset = 1
 				funcTypeID := b.Pool.NodeTypes[n.Function]
@@ -282,22 +332,18 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 
 				var selfReg string
 				if (expectedSelfMask&sema.MaskIsPointer) != 0 && (leftType.Mask&sema.MaskIsPointer) == 0 {
-					// Auto-reference: Function wants a pointer, we have a value
 					selfReg, _ = b.emitLValue(fa.Left)
 				} else if (expectedSelfMask&sema.MaskIsPointer) == 0 && (leftType.Mask&sema.MaskIsPointer) != 0 {
-					// Auto-dereference: Function wants a value, we have a pointer
 					ptrReg := b.emitExpression(fa.Left)
 					selfReg = b.NextReg()
 					b.EmitLine("  %s = load %s, %s* %s", selfReg, b.GetLLVMType(expectedSelfTypeID), b.GetLLVMType(expectedSelfTypeID), ptrReg)
 				} else {
-					// Exact match (e.g., boss_ptr.take_damage)
 					selfReg = b.emitExpression(fa.Left)
 				}
-
 				selfLLVM := b.GetLLVMType(expectedSelfTypeID)
 				args = append(args, fmt.Sprintf("%s %s", selfLLVM, selfReg))
 			} else {
-				// It's an Enum Variant Constructor! (e.g. Action.Spawn)
+				// Enum Constructor
 				funcName = actualObjType.Name + "::" + fa.Field.Value
 			}
 		}
@@ -310,13 +356,70 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			funcName = funcType.Name
 		}
 
-		// 2. THE VARIADIC PANIC FIX: Bounds-check the parameters array!
+		// --- THE FIX: INLINE ENUM MEMORY PACKING ---
+		if strings.Contains(funcName, "::") {
+			parts := strings.Split(funcName, "::")
+			vName := parts[len(parts)-1]
+
+			enumTypeID := funcType.FuncReturn
+			enumLLVM := b.GetLLVMType(enumTypeID)
+			actualEnum := b.Pool.Types[enumTypeID]
+
+			// 1. Generate Deterministic Tag ID
+			var variantNames []string
+			for k := range actualEnum.Variants {
+				variantNames = append(variantNames, k)
+			}
+			sort.Strings(variantNames)
+			tagIndex := 0
+			for i, name := range variantNames {
+				if name == vName {
+					tagIndex = i
+					break
+				}
+			}
+
+			// 2. Allocate the empty buffer and write the Tag
+			enumReg := b.NextReg()
+			b.EmitLine("  %s = alloca %s", enumReg, enumLLVM)
+			tagPtr := b.NextReg()
+			b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 0", tagPtr, enumLLVM, enumLLVM, enumReg)
+			b.EmitLine("  store i8 %d, i8* %s", tagIndex, tagPtr)
+
+			// 3. Bitcast and Pack the Payload Data!
+			if len(n.Arguments) > 0 {
+				var payloadLLVMTypes []string
+				payloadLLVMTypes = append(payloadLLVMTypes, "i8") // The tag offset
+				var argRegs []string
+
+				// Extract argument values
+				for _, arg := range n.Arguments {
+					argRegs = append(argRegs, b.emitExpression(arg))
+					payloadLLVMTypes = append(payloadLLVMTypes, b.GetLLVMType(b.Pool.NodeTypes[arg]))
+				}
+
+				// Forge the dynamic struct and cast the pointer
+				variantStructLLVM := fmt.Sprintf("{ %s }", strings.Join(payloadLLVMTypes, ", "))
+				castPtr := b.NextReg()
+				b.EmitLine("  %s = bitcast %s* %s to %s*", castPtr, enumLLVM, enumReg, variantStructLLVM)
+
+				// Write values directly into the buffer!
+				for i, argReg := range argRegs {
+					fieldPtr := b.NextReg()
+					b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 %d", fieldPtr, variantStructLLVM, variantStructLLVM, castPtr, i+1)
+					b.EmitLine("  store %s %s, %s* %s", payloadLLVMTypes[i+1], argReg, payloadLLVMTypes[i+1], fieldPtr)
+				}
+			}
+
+			valReg := b.NextReg()
+			b.EmitLine("  %s = load %s, %s* %s", valReg, enumLLVM, enumLLVM, enumReg)
+			return valReg
+		}
+
 		for i, arg := range n.Arguments {
 			paramIndex := i + argOffset
-
 			if paramIndex < len(funcType.FuncParams) {
 				expectedParamTypeID := funcType.FuncParams[paramIndex]
-				// Skip compile-time ghost arguments in the function call!
 				if b.Pool.Types[expectedParamTypeID].Name == "type" {
 					continue
 				}
@@ -325,22 +428,6 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			valReg := b.emitExpression(arg)
 			argLLVM := b.GetLLVMType(b.Pool.NodeTypes[arg])
 			args = append(args, fmt.Sprintf("%s %s", argLLVM, valReg))
-		}
-
-		// 3. INLINE ENUM CONSTRUCTORS: Do not call missing LLVM functions!
-		if strings.Contains(funcName, "::") {
-			enumReg := b.NextReg()
-			b.EmitLine("  %s = alloca %s", enumReg, retLLVM)
-
-			// Extract the tag pointer and write '0' to satisfy the MatchExpr switch
-			tagPtr := b.NextReg()
-			b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 0", tagPtr, retLLVM, retLLVM, enumReg)
-			b.EmitLine("  store i8 0, i8* %s", tagPtr)
-
-			// Return the forged Enum struct
-			valReg := b.NextReg()
-			b.EmitLine("  %s = load %s, %s* %s", valReg, retLLVM, retLLVM, enumReg)
-			return valReg
 		}
 
 		if retLLVM == "void" {
@@ -501,44 +588,83 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			b.EmitLine("  %s = alloca %s", resultPtr, llvmType)
 		}
 
-		// 1. Evaluate the Enum Value
+		// 1. Evaluate Enum Value and store it on the stack so we can bitcast its pointer
 		targetReg := b.emitExpression(n.Value)
 		targetLLVM := b.GetLLVMType(b.Pool.NodeTypes[n.Value])
 
-		// 2. Extract the i8 Tag!
+		targetPtr := b.NextReg()
+		b.EmitLine("  %s = alloca %s", targetPtr, targetLLVM)
+		b.EmitLine("  store %s %s, %s* %s", targetLLVM, targetReg, targetLLVM, targetPtr)
+
+		// 2. Extract Tag
 		tagReg := b.NextReg()
 		b.EmitLine("  %s = extractvalue %s %s, 0", tagReg, targetLLVM, targetReg)
+
+		// Get deterministic tags mapping
+		enumType := b.Pool.Types[b.Pool.NodeTypes[n.Value]]
+		var variantNames []string
+		for k := range enumType.Variants {
+			variantNames = append(variantNames, k)
+		}
+		sort.Strings(variantNames)
 
 		mergeLbl := b.NextLabel()
 		defaultLbl := b.NextLabel()
 
-		// 3. Emit the LLVM Switch statement
+		// 3. Emit correct Tag Switching!
 		b.EmitLine("  switch i8 %s, label %%%s [", tagReg, defaultLbl)
 		armLabels := make([]string, len(n.Arms))
-		for i := range n.Arms {
-			armLabels[i] = b.NextLabel()
-			b.EmitLine("    i8 %d, label %%%s", i, armLabels[i]) // Tag variants correspond to index
-		}
-		b.EmitLine("  ]")
-
-		// 4. Emit the Arms
 		for i, arm := range n.Arms {
-			b.EmitLine("\n%s:", armLabels[i])
-
-			// THE FIX: arm.Pattern is already an *ast.Identifier! No type assertion needed.
+			armLabels[i] = b.NextLabel()
 			variantNameStr := arm.Pattern.Value
-
 			parts := strings.Split(variantNameStr, ".")
 			vName := parts[len(parts)-1]
 
-			enumType := b.Pool.Types[b.Pool.NodeTypes[n.Value]]
+			tagIndex := 0
+			for idx, name := range variantNames {
+				if name == vName {
+					tagIndex = idx
+					break
+				}
+			}
+			b.EmitLine("    i8 %d, label %%%s", tagIndex, armLabels[i])
+		}
+		b.EmitLine("  ]")
+
+		// 4. Emit the Arms (Unboxing the Payload!)
+		for i, arm := range n.Arms {
+			b.EmitLine("\n%s:", armLabels[i])
+
+			variantNameStr := arm.Pattern.Value
+			parts := strings.Split(variantNameStr, ".")
+			vName := parts[len(parts)-1]
 			payloadTypes := enumType.Variants[vName]
 
-			// Allocate the EXACT type from the Enum Variant layout!
-			for j, param := range arm.Params {
-				paramLLVM := b.GetLLVMType(payloadTypes[j])
-				b.EmitLine("  %%%s = alloca %s", param.Value, paramLLVM)
-				b.Locals[param.Value] = "%" + param.Value
+			if len(arm.Params) > 0 {
+				var payloadLLVMTypes []string
+				payloadLLVMTypes = append(payloadLLVMTypes, "i8") // tag offset
+				for _, pt := range payloadTypes {
+					payloadLLVMTypes = append(payloadLLVMTypes, b.GetLLVMType(pt))
+				}
+				variantStructLLVM := fmt.Sprintf("{ %s }", strings.Join(payloadLLVMTypes, ", "))
+
+				// Bitcast the raw buffer into our specific variant struct
+				castPtr := b.NextReg()
+				b.EmitLine("  %s = bitcast %s* %s to %s*", castPtr, targetLLVM, targetPtr, variantStructLLVM)
+
+				// Pull values out into standard local registers
+				for j, param := range arm.Params {
+					paramLLVM := b.GetLLVMType(payloadTypes[j])
+					b.EmitLine("  %%%s = alloca %s", param.Value, paramLLVM)
+					b.Locals[param.Value] = "%" + param.Value
+
+					fieldPtr := b.NextReg()
+					b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 %d", fieldPtr, variantStructLLVM, variantStructLLVM, castPtr, j+1)
+
+					valReg := b.NextReg()
+					b.EmitLine("  %s = load %s, %s* %s", valReg, paramLLVM, paramLLVM, fieldPtr)
+					b.EmitLine("  store %s %s, %s* %%%s", paramLLVM, valReg, paramLLVM, param.Value)
+				}
 			}
 
 			bodyVal := b.emitBlock(arm.Body)

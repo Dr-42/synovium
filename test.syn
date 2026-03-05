@@ -1,81 +1,98 @@
-// 1. C-FFI Variadics (Body-less)
+// ==========================================
+// 1. EXTERNAL FFI & VARIADICS
+// ==========================================
 fnc printf(fmt: str, ...);
 
-// 2. Tagged Unions (Enums)
-enum Action {
-    Spawn(i32),
-    Move(f64, f64),
-    Idle
+// ==========================================
+// 2. TAGGED UNIONS (ENUMS) & PAYLOADS
+// ==========================================
+enum State {
+    Alive(f64),    // Payload: Health
+    Dead(i32),     // Payload: Time of death
+    Invincible
 }
 
-// 3. Structs
-struct Entity {
+// ==========================================
+// 3. STRUCTS & NESTED DATA
+// ==========================================
+struct Player {
     id: i32,
-    health: f64,
-    active: bln
+    state: State,
+    score: i32
 }
 
-// 4. Methods and Impl Blocks
-impl Entity {
-    fnc take_damage(self: *Self, amount: f64) {
-        self.health -= amount;
-        if self.health <= 0.0 {
-            self.active = false;
-        }
+// ==========================================
+// 4. IMPL BLOCKS, METHODS, & AUTO-DEREF
+// ==========================================
+impl Player {
+    fnc take_hit(self: *Player, damage: f64) {
+        // Match statement with block bubbling and payload extraction!
+        new_state : State := match self.state {
+            State.Alive(health) -> {
+                rem : f64 := health - damage;
+                if rem <= 0.0 {
+                    printf("Player %d died!\n", self.id);
+                    State.Dead(99) // Bubbles out
+                } else {
+                    State.Alive(rem) // Bubbles out
+                }
+            },
+            State.Dead(time) -> {
+                printf("Stop hitting him, he died at %d!\n", time);
+                self.state // Bubbles out (No change)
+            },
+            State.Invincible -> {
+                printf("Tink! Armor deflected %f damage.\n", damage);
+                self.state // Bubbles out
+            }
+        };
+        
+        self.state = new_state;
     }
 }
 
-// 5. Generic Functions (Comptime AST Cloning)
-fnc identity(T: type, val: T) = T {
-    ret val;
+// ==========================================
+// 5. COMPILE-TIME GENERICS (MONOMORPHIZATION)
+// ==========================================
+fnc unwrap_or(T: type, val: *T, fallback: T) = T {
+    // If pointer is not null (not yet natively supported, assuming true for test)
+    ret *val; 
 }
 
-// 6. Main Execution
+// ==========================================
+// 6. MAIN EXECUTION & CONTROL FLOW
+// ==========================================
 fnc main() {
-    // Variable declarations, Struct Init, Floats, Bools
-    boss: Entity = Entity {
-        .id = 999,
-        .health = 1000.5,
-        .active = true
+    // Variable Decls, Struct Init, Enum Constructors
+    p: Player = Player {
+        .id = 42,
+        .state = State.Alive(100.0),
+        .score = 0
     };
 
-    // Prefix operators and Method calls
-    boss_ptr : *Entity := &boss;
-    boss_ptr.take_damage(250.0);
+    // Arrays & Strings
+    messages : [str; 2] := ["Combat Start!", "Combat End!"];
+    printf("%s\n", messages[0]);
 
-    // Array Literals & Strings with Escapes!
-    names : [str; 2] := ["Neo", "Dr-42"];
-    history : [i32; 3] := [10, 20, 30];
-
-    // Control Flow: Match with Block Bubbling
-    status_code : i32 := match Action.Spawn(boss.id) {
-        Action.Spawn(id) -> {
-            printf("Spawned entity: %d\n", id);
-            1 // Bubbles to status_code
-        },
-        Action.Move(x, y) -> {
-            2 // Bubbles
-        },
-        Action.Idle -> {
-            0 // Bubbles
+    // Loop with range and break/bubble
+    loop (i: i32 = 0...5) {
+        if i == 2 {
+            p.state = State.Invincible;
         }
-    };
 
-    // Control Flow: Loops & If/Elif/Else
-    loop (i: i32 = 0...3) {
-        if i == 1 {
-            printf("Iteration 1\n");
-            0
-        } elif i == 2 {
-            brk;
-            0
-        } else {
-            printf("Other iteration\n");
-            0
+        // Pointers & Method Calls
+        p_ptr : *Player := &p;
+        p_ptr.take_hit(60.0);
+
+        if i == 3 {
+            brk; // Breaks out of the loop
         }
     }
 
     // Generic Instantiation
-    final_val : i32 := identity(i32, 42);
-    printf("Final value: %d\n", final_val);
+    bonus : i32 := 500;
+    bonus_ptr : *i32 := &bonus;
+    final_score : i32 := p.score + unwrap_or(i32, bonus_ptr, 0);
+
+    printf("Final Score: %d\n", final_score);
 }
