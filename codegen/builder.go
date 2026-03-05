@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"strings"
+
 	"synovium/ast"
 	"synovium/sema"
 )
@@ -32,6 +33,12 @@ func (b *Builder) NextReg() string {
 	reg := fmt.Sprintf("%%%d", b.nextRegID)
 	b.nextRegID++
 	return reg
+}
+
+func (b *Builder) NextLabel() string {
+	lbl := fmt.Sprintf("L%d", b.nextLabelID)
+	b.nextLabelID++
+	return lbl
 }
 
 func (b *Builder) EmitLine(format string, args ...any) {
