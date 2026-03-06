@@ -3,6 +3,7 @@ package sema
 import (
 	"fmt"
 	"strings"
+
 	"synovium/ast"
 )
 
@@ -71,11 +72,9 @@ func (e *Evaluator) evaluateImplDecl(node *ast.ImplDecl, scope *Scope) TypeID {
 		return e.error(node.Target.Span(), "impl target must be a declared type")
 	}
 
-	// We access the pool directly via index to mutate the Methods map
-	targetType := &e.Pool.Types[targetSym.TypeID]
-
-	if targetType.Methods == nil {
-		targetType.Methods = make(map[string]TypeID)
+	// THE FIX: Do not take a pointer to the slice element!
+	if e.Pool.Types[targetSym.TypeID].Methods == nil {
+		e.Pool.Types[targetSym.TypeID].Methods = make(map[string]TypeID)
 	}
 
 	// Inject 'Self' into the scope so methods can legally use `self: *Self`
@@ -88,7 +87,9 @@ func (e *Evaluator) evaluateImplDecl(node *ast.ImplDecl, scope *Scope) TypeID {
 			return 0
 		}
 
-		targetType.Methods[method.Name.Value] = methodID
+		// ALWAYS re-index the pool because evaluateFunctionDecl appends to the slice!
+		// If capacity was exceeded, the underlying array was reallocated.
+		e.Pool.Types[targetSym.TypeID].Methods[method.Name.Value] = methodID
 	}
 
 	return targetSym.TypeID

@@ -57,6 +57,16 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl, typeID sema.TypeID) {
 		funcName = funcType.Name
 	}
 
+	opNames := map[string]string{"+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod", "==": "eq", "!=": "neq", "<": "lt", ">": "gt", "<=": "lte", ">=": "gte"}
+	if safeOp, isOp := opNames[node.Name.Value]; isOp {
+		// Clean struct name mapping: Vec_op_add
+		selfType := b.Pool.Types[funcType.FuncParams[0]]
+		if (selfType.Mask & sema.MaskIsPointer) != 0 {
+			selfType = b.Pool.Types[selfType.BaseType]
+		}
+		funcName = selfType.Name + "_op_" + safeOp
+	}
+
 	if node.Body == nil {
 		b.EmitLine("declare %s @%s(%s)", retLLVM, funcName, strings.Join(params, ", "))
 		b.EmitLine("")

@@ -108,7 +108,7 @@ func main() {
 
 	// 2. Invoke Clang to compile the LLVM IR into a native executable
 	exeFilename := "./app"
-	cmd := exec.Command("clang", "-Wno-override-module", "-o", exeFilename, llFilename)
+	cmd := exec.Command("clang", "-lm", "-o", exeFilename, llFilename)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 
@@ -135,7 +135,7 @@ func main() {
 
 	// Optional: Clean up the generated files
 	os.Remove(llFilename)
-	// os.Remove(exeFilename)
+	os.Remove(exeFilename)
 }
 
 // --- AST PRINTING HELPERS ---

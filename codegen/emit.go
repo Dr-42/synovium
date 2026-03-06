@@ -190,8 +190,67 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		}
 
 	case *ast.InfixExpr:
+		// --- 1. OPERATOR OVERLOADING HOOK ---
+		leftTypeID := b.Pool.NodeTypes[n.Left]
+		leftType := b.Pool.Types[leftTypeID]
+		isAssign := n.Operator == "=" || n.Operator == "~=" || n.Operator == "+=" || n.Operator == "-="
+
+		if !leftType.IsFundamental && !isAssign {
+			actualLeft := leftType
+			if (actualLeft.Mask & sema.MaskIsPointer) != 0 {
+				actualLeft = b.Pool.Types[actualLeft.BaseType]
+			}
+
+			if methodID, exists := actualLeft.Methods[n.Operator]; exists {
+				expectedSelf := b.Pool.Types[methodID].FuncParams[0]
+				expectedOther := b.Pool.Types[methodID].FuncParams[1]
+
+				// Coerce Left Operand
+				var selfReg string
+				if (b.Pool.Types[expectedSelf].Mask&sema.MaskIsPointer) != 0 && (leftType.Mask&sema.MaskIsPointer) == 0 {
+					selfReg, _ = b.emitLValue(n.Left) // Auto-Ref
+				} else if (b.Pool.Types[expectedSelf].Mask&sema.MaskIsPointer) == 0 && (leftType.Mask&sema.MaskIsPointer) != 0 {
+					ptrReg := b.emitExpression(n.Left)
+					selfReg = b.NextReg()
+					b.EmitLine("  %s = load %s, %s* %s", selfReg, b.GetLLVMType(expectedSelf), b.GetLLVMType(expectedSelf), ptrReg) // Auto-Deref
+				} else {
+					selfReg = b.emitExpression(n.Left)
+				}
+
+				// Coerce Right Operand
+				rightTypeID := b.Pool.NodeTypes[n.Right]
+				rightType := b.Pool.Types[rightTypeID]
+				var rightReg string
+
+				if (b.Pool.Types[expectedOther].Mask&sema.MaskIsPointer) != 0 && (rightType.Mask&sema.MaskIsPointer) == 0 {
+					rightReg, _ = b.emitLValue(n.Right) // Auto-Ref
+				} else if (b.Pool.Types[expectedOther].Mask&sema.MaskIsPointer) == 0 && (rightType.Mask&sema.MaskIsPointer) != 0 {
+					ptrReg := b.emitExpression(n.Right)
+					rightReg = b.NextReg()
+					b.EmitLine("  %s = load %s, %s* %s", rightReg, b.GetLLVMType(expectedOther), b.GetLLVMType(expectedOther), ptrReg) // Auto-Deref
+				} else {
+					rightReg = b.emitExpression(n.Right)
+				}
+
+				retLLVM := b.GetLLVMType(b.Pool.Types[methodID].FuncReturn)
+				args := []string{
+					fmt.Sprintf("%s %s", b.GetLLVMType(expectedSelf), selfReg),
+					fmt.Sprintf("%s %s", b.GetLLVMType(expectedOther), rightReg),
+				}
+
+				opNames := map[string]string{"+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod", "==": "eq", "!=": "neq", "<": "lt", ">": "gt", "<=": "lte", ">=": "gte"}
+				safeOp := opNames[n.Operator]
+				if safeOp == "" {
+					safeOp = "op"
+				}
+				funcName := actualLeft.Name + "_op_" + safeOp
+
+				reg := b.NextReg()
+				b.EmitLine("  %s = call %s @%s(%s)", reg, retLLVM, funcName, strings.Join(args, ", "))
+				return reg
+			}
+		}
 		// --- ASSIGNMENTS ---
-		isAssign := n.Operator == "=" || n.Operator == "+=" || n.Operator == "-="
 		if isAssign {
 			ptrReg, llvmType := b.emitLValue(n.Left)
 			rightReg := b.emitExpression(n.Right)

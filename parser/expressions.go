@@ -47,11 +47,19 @@ func (p *Parser) parseGroupedExpression() ast.Expr {
 	return exp
 }
 
+func isOverloadableOperator(t lexer.TokenType) bool {
+	switch t {
+	case lexer.PLUS, lexer.MINUS, lexer.ASTERISK, lexer.SLASH, lexer.MOD, lexer.EQ, lexer.NOT_EQ, lexer.LT, lexer.LTE, lexer.GT, lexer.GTE:
+		return true
+	}
+	return false
+}
+
 func (p *Parser) parseFunctionLiteral() ast.Expr {
 	decl := &ast.FunctionDecl{Token: p.curToken}
 
 	// 1. OPTIONAL Name (if it's named, it's a nested function; if not, it's a lambda)
-	if p.peekTokenIs(lexer.IDENT) {
+	if p.peekTokenIs(lexer.IDENT) || isOverloadableOperator(p.peekToken.Type) {
 		p.nextToken()
 		decl.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 	}

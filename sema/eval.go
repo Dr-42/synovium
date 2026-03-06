@@ -65,7 +65,7 @@ func (e *Evaluator) error(span lexer.Span, msg string) TypeID {
 
 	// 2. Build the visual snippet
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n\033[31mError\033[0m: %s\n", msg))
+	sb.WriteString(fmt.Sprintf("\033[31mError\033[0m: %s\n", msg))
 	sb.WriteString(fmt.Sprintf("  --> line %d:%d\n", errLineIdx+1, errColStart+1))
 
 	// Print Previous Line (Context)
@@ -287,6 +287,12 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 		return leftID
 	}
 
+	leftType := e.Pool.Types[leftID]
+	rightType := e.Pool.Types[rightID]
+	if !leftType.IsFundamental || !rightType.IsFundamental {
+		return e.routeToDispatchTable(node.Operator, leftID, rightID, node.Span())
+	}
+
 	// --- RELATIONAL & LOGICAL (ADDED: Strictly returns `bln`) ---
 	isRelational := node.Operator == "==" || node.Operator == "!=" || node.Operator == "<" || node.Operator == "<=" || node.Operator == ">" || node.Operator == ">="
 	isLogical := node.Operator == "&&" || node.Operator == "||"
@@ -316,8 +322,40 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 	return leftID
 }
 
-func (e *Evaluator) routeToDispatchTable(op string, left, right TypeID, span lexer.Span) TypeID {
-	return e.error(span, "operator overloading / dispatch tables not yet implemented")
+func (e *Evaluator) routeToDispatchTable(operator string, leftID, rightID TypeID, span lexer.Span) TypeID {
+	leftType := e.Pool.Types[leftID]
+	actualLeft := leftType
+	if (actualLeft.Mask & MaskIsPointer) != 0 {
+		actualLeft = e.Pool.Types[actualLeft.BaseType]
+	}
+
+	methodID, hasMethod := actualLeft.Methods[operator]
+	if !hasMethod {
+		return e.error(span, fmt.Sprintf("type '%s' does not implement the '%s' operator", actualLeft.Name, operator))
+	}
+
+	methodSignature := e.Pool.Types[methodID]
+	if len(methodSignature.FuncParams) != 2 {
+		return e.error(span, fmt.Sprintf("operator overload '%s' must take exactly 1 argument (besides self)", operator))
+	}
+
+	// We allow Codegen to handle the ptr/value coercions, so we just check base types!
+	expectedRightID := methodSignature.FuncParams[1]
+	actualExpected := e.Pool.Types[expectedRightID]
+	if (actualExpected.Mask & MaskIsPointer) != 0 {
+		actualExpected = e.Pool.Types[actualExpected.BaseType]
+	}
+
+	actualProvided := e.Pool.Types[rightID]
+	if (actualProvided.Mask & MaskIsPointer) != 0 {
+		actualProvided = e.Pool.Types[actualProvided.BaseType]
+	}
+
+	if actualExpected.ID != actualProvided.ID && expectedRightID != rightID {
+		return e.error(span, fmt.Sprintf("type mismatch in operator overload: expects %s, got %s", e.Pool.Types[expectedRightID].Name, e.Pool.Types[rightID].Name))
+	}
+
+	return methodSignature.FuncReturn
 }
 
 func (e *Evaluator) typesMatch(expected, actual TypeID) bool {

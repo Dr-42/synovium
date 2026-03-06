@@ -1,0 +1,24 @@
+fnc printf(fmt: str, ...);
+fnc sqrt(x: f64) = f64;
+
+struct Vec { x: f64, y: f64 }
+impl Vec {
+    // Notice it takes POINTERS!
+    fnc +(self: *Self, other: *Vec) = Vec {
+        ret Vec{ .x = self.x + other.x, .y = self.y + other.y };
+    }
+
+    fnc mag_sq(self: *Self) = f64 {
+        sqrt(self.x * self.x + self.y * self.y)
+    }
+}
+
+fnc main() = i32 {
+    // Passed as VALUES!
+    a: Vec = Vec{ .x = 2.0, .y = 1.0 };
+    b: Vec = Vec{ .x = 1.0, .y = 3.0 };
+    c: Vec = a + b; 
+    
+    printf("Result X: %f\n", c.mag_sq());
+    ret 0;
+}
