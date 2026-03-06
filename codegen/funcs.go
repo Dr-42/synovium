@@ -93,10 +93,14 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl, typeID sema.TypeID) {
 
 	bodyVal := b.emitBlock(node.Body)
 
-	// --- THE FIX: Only emit default return if block didn't early-terminate ---
+	isMain := funcType.Name == "main"
 	if bodyVal != "<terminated>" {
-		if retLLVM == "void" {
+		if isMain {
+			b.EmitLine("  ret i32 0")
+		} else if retLLVM == "void" {
 			b.EmitLine("  ret void")
+		} else if bodyVal != "" {
+			b.EmitLine("  ret %s %s", retLLVM, bodyVal) // Return the bubbled register!
 		} else {
 			b.EmitLine("  ret %s undef", retLLVM)
 		}

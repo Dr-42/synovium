@@ -1,0 +1,37 @@
+fnc printf(a : str, ...) = i32;
+fnc scanf(a : str, ...) = i32;
+
+fnc sum(a : i32, b : i32) = i32 {
+    a + b
+}
+
+fnc main() = i32 {
+    a : i32 ~= 0;
+    b : i32 ~= 1;
+    c : i32 ~= 0;
+    qual : str ~= "";
+    printf("Enter the ceiling: ");
+    ceiling : i32 = 0;
+    // get_num();
+    scanf("%d", &ceiling);
+
+    d : i32 ~= 0;
+    loop (a < ceiling) {
+        d = d + 1;
+        if (((d % 10) == 1) && (d != 11)) {
+            qual = "st";
+        } elif (((d % 10) == 2) && (d != 12)) {
+            qual = "nd";
+        } elif ((d % 10) == 3 && (d != 13)) {
+            qual = "rd";
+        } else {
+            qual = "th";
+        }
+        printf("%d%s fibonacci number is %d\n", d, qual, a);
+        c = sum(a, b);
+        a = b;
+        b = c;
+    }
+
+    ret 0;
+}

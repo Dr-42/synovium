@@ -312,6 +312,22 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			} else {
 				b.EmitLine("  %s = sdiv %s %s, %s", reg, llvmType, leftReg, rightReg)
 			}
+		case "%":
+			if isFloat {
+				b.EmitLine("  %s = frem %s %s, %s", reg, llvmType, leftReg, rightReg)
+			} else {
+				b.EmitLine("  %s = srem %s %s, %s", reg, llvmType, leftReg, rightReg)
+			}
+		case "&":
+			b.EmitLine("  %s = and %s %s, %s", reg, llvmType, leftReg, rightReg)
+		case "|":
+			b.EmitLine("  %s = or %s %s, %s", reg, llvmType, leftReg, rightReg)
+		case "^":
+			b.EmitLine("  %s = xor %s %s, %s", reg, llvmType, leftReg, rightReg)
+		case "<<":
+			b.EmitLine("  %s = shl %s %s, %s", reg, llvmType, leftReg, rightReg)
+		case ">>":
+			b.EmitLine("  %s = ashr %s %s, %s", reg, llvmType, leftReg, rightReg)
 		case "==":
 			if isFloat {
 				b.EmitLine("  %s = fcmp oeq %s %s, %s", reg, llvmType, leftReg, rightReg)
