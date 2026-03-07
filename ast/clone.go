@@ -160,9 +160,16 @@ func CloneNode(node Node) Node {
 		}
 		return &MatchArm{Token: n.Token, Pattern: CloneNode(n.Pattern).(*Identifier), Params: params, Body: CloneNode(n.Body).(*Block)}
 
-	// -- Types --
+		// -- Types --
 	case *NamedType:
-		return &NamedType{Token: n.Token, Name: n.Name}
+		var genericArgs []Type
+		if len(n.GenericArgs) > 0 {
+			genericArgs = make([]Type, len(n.GenericArgs))
+			for i, arg := range n.GenericArgs {
+				genericArgs[i] = CloneNode(arg).(Type)
+			}
+		}
+		return &NamedType{Token: n.Token, Name: n.Name, GenericArgs: genericArgs, IsIntrinsic: n.IsIntrinsic, EndSpan: n.EndSpan}
 	case *PointerType:
 		return &PointerType{Token: n.Token, Base: CloneNode(n.Base).(Type)}
 	case *ReferenceType:
@@ -198,6 +205,46 @@ func CloneNode(node Node) Node {
 			count = CloneNode(n.Count).(Expr)
 		}
 		return &ArrayInitExpr{Token: n.Token, Elements: elements, Count: count, EndSpan: n.EndSpan}
+	// -- Declarations (Add these below VariableDecl/FunctionDecl) --
+	case *StructDecl:
+		var clonedName *Identifier
+		if n.Name != nil {
+			clonedName = CloneNode(n.Name).(*Identifier)
+		}
+		params := make([]*Parameter, len(n.GenericParams))
+		for i, p := range n.GenericParams {
+			params[i] = CloneNode(p).(*Parameter)
+		}
+		fields := make([]*FieldDecl, len(n.Fields))
+		for i, f := range n.Fields {
+			fields[i] = CloneNode(f).(*FieldDecl)
+		}
+		return &StructDecl{Token: n.Token, Name: clonedName, GenericParams: params, Fields: fields, EndSpan: n.EndSpan}
+
+	case *FieldDecl:
+		return &FieldDecl{Token: n.Token, Name: CloneNode(n.Name).(*Identifier), Type: CloneNode(n.Type).(Type)}
+
+	case *EnumDecl:
+		var clonedName *Identifier
+		if n.Name != nil {
+			clonedName = CloneNode(n.Name).(*Identifier)
+		}
+		params := make([]*Parameter, len(n.GenericParams))
+		for i, p := range n.GenericParams {
+			params[i] = CloneNode(p).(*Parameter)
+		}
+		variants := make([]*VariantDecl, len(n.Variants))
+		for i, v := range n.Variants {
+			variants[i] = CloneNode(v).(*VariantDecl)
+		}
+		return &EnumDecl{Token: n.Token, Name: clonedName, GenericParams: params, Variants: variants, EndSpan: n.EndSpan}
+
+	case *VariantDecl:
+		types := make([]Type, len(n.Types))
+		for i, t := range n.Types {
+			types[i] = CloneNode(t).(Type)
+		}
+		return &VariantDecl{Token: n.Token, Name: CloneNode(n.Name).(*Identifier), Types: types}
 	}
 
 	panic(fmt.Sprintf("CloneNode: unhandled node type %T", node))

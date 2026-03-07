@@ -93,11 +93,8 @@ func (b *Builder) emitFunction(node *ast.FunctionDecl, typeID sema.TypeID) {
 
 	bodyVal := b.emitBlock(node.Body)
 
-	isMain := funcType.Name == "main"
 	if bodyVal != "<terminated>" {
-		if isMain {
-			b.EmitLine("  ret i32 0")
-		} else if retLLVM == "void" {
+		if retLLVM == "void" {
 			b.EmitLine("  ret void")
 		} else if bodyVal != "" {
 			b.EmitLine("  ret %s %s", retLLVM, bodyVal) // Return the bubbled register!

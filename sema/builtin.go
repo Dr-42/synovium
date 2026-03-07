@@ -1,6 +1,10 @@
 package sema
 
-import "synovium/ast"
+import (
+	"fmt"
+
+	"synovium/ast"
+)
 
 func (e *Evaluator) InjectBuiltins(globalScope *Scope) {
 	// Helper to forge a primitive type
@@ -76,10 +80,52 @@ func (e *Evaluator) resolveTypeSignatureInternal(t ast.Type, scope *Scope) TypeI
 	switch v := t.(type) {
 
 	case *ast.NamedType:
-		if sym, exists := scope.Resolve(v.Name); exists {
-			return sym.TypeID
+		sym, exists := scope.Resolve(v.Name)
+		if !exists {
+			return e.error(v.Span(), "unknown type: "+v.Name)
 		}
-		return e.error(v.Span(), "unknown type: "+v.Name)
+
+		if len(v.GenericArgs) > 0 {
+			templateType := e.Pool.Types[sym.TypeID]
+			if templateType.Executable == nil {
+				return e.error(v.Span(), "type is not generic")
+			}
+
+			instName := templateType.Name
+			concreteArgs := make([]TypeID, len(v.GenericArgs))
+			for i, arg := range v.GenericArgs {
+				concreteArgs[i] = e.resolveTypeSignature(arg, scope)
+				instName += fmt.Sprintf("_%d", concreteArgs[i])
+			}
+
+			// Hash Consing: Check if we already compiled this permutation!
+			for _, t := range e.Pool.Types {
+				if t.Name == instName {
+					return t.ID
+				}
+			}
+
+			// Clone and Evaluate the Struct/Enum!
+			instScope := NewScope(scope)
+			if structNode, ok := templateType.Executable.(*ast.StructDecl); ok {
+				for i, param := range structNode.GenericParams {
+					instScope.Define(param.Name.Value, concreteArgs[i], false, param.Name)
+				}
+				cloned := ast.CloneNode(structNode).(*ast.StructDecl)
+				cloned.GenericParams = nil // Strip generic params so it evaluates linearly
+				cloned.Name = &ast.Identifier{Value: instName}
+				return e.evaluateStructDecl(cloned, instScope)
+			} else if enumNode, ok := templateType.Executable.(*ast.EnumDecl); ok {
+				for i, param := range enumNode.GenericParams {
+					instScope.Define(param.Name.Value, concreteArgs[i], false, param.Name)
+				}
+				cloned := ast.CloneNode(enumNode).(*ast.EnumDecl)
+				cloned.GenericParams = nil
+				cloned.Name = &ast.Identifier{Value: instName}
+				return e.evaluateEnumDecl(cloned, instScope)
+			}
+		}
+		return sym.TypeID
 
 	case *ast.FunctionType:
 		// Build an anonymous UniversalType for the function pointer

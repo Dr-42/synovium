@@ -178,6 +178,7 @@ type Type interface {
 type NamedType struct {
 	Token       lexer.Token // The first identifier token
 	Name        string      // The full name (e.g., "i32" or "std.Vec3")
+	GenericArgs []Type      // Optional
 	IsIntrinsic bool        // True if it's one of Synovium's built-in types
 	EndSpan     int         // We track the end byte for namespaces
 }
@@ -345,10 +346,11 @@ func (p *Parameter) Span() lexer.Span {
 
 // StructDecl maps to: struct <identifier> { <field_decl_list>? }
 type StructDecl struct {
-	Token   lexer.Token
-	Name    *Identifier
-	Fields  []*FieldDecl
-	EndSpan int
+	Token         lexer.Token
+	Name          *Identifier
+	GenericParams []*Parameter
+	Fields        []*FieldDecl
+	EndSpan       int
 }
 
 func (s *StructDecl) declNode() {}
@@ -363,12 +365,17 @@ type FieldDecl struct {
 	Type  Type
 }
 
+func (f *FieldDecl) Span() lexer.Span {
+	return lexer.Span{Start: f.Name.Span().Start, End: f.Type.Span().End}
+}
+
 // EnumDecl maps to: enum <identifier> { <variant_list>? }
 type EnumDecl struct {
-	Token    lexer.Token
-	Name     *Identifier
-	Variants []*VariantDecl
-	EndSpan  int
+	Token         lexer.Token
+	Name          *Identifier
+	GenericParams []*Parameter
+	Variants      []*VariantDecl
+	EndSpan       int
 }
 
 func (e *EnumDecl) declNode() {}
@@ -381,6 +388,10 @@ type VariantDecl struct {
 	Token lexer.Token
 	Name  *Identifier
 	Types []Type // e.g., Running(f64, i32)
+}
+
+func (v *VariantDecl) Span() lexer.Span {
+	return lexer.Span{Start: v.Name.Span().Start, End: v.Types[len(v.Types)-1].Span().End}
 }
 
 // ImplDecl maps to: impl <identifier> { <function_decl>* }

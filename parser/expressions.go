@@ -380,8 +380,6 @@ func (p *Parser) parseMatchExpression() ast.Expr {
 	expr := &ast.MatchExpr{Token: p.curToken}
 
 	p.nextToken() // move past 'match'
-
-	// Disable struct init to prevent `match s {` from eating the block
 	p.disallowStructInit = true
 	expr.Value = p.parseExpression(LOWEST)
 	p.disallowStructInit = false
@@ -391,34 +389,50 @@ func (p *Parser) parseMatchExpression() ast.Expr {
 	}
 
 	for !p.peekTokenIs(lexer.RBRACE) && !p.peekTokenIs(lexer.EOF) {
-		p.nextToken() // move to the start of the pattern arm
-
+		p.nextToken()
 		arm := &ast.MatchArm{Token: p.curToken}
 
+		// --- THE FIX: Smart Pattern Path Parsing ---
 		patternName := p.curToken.Literal
-		for p.peekTokenIs(lexer.DOT) {
-			p.nextToken()
-			patternName += "."
-			if !p.expectPeek(lexer.IDENT) {
-				return nil
-			}
-			patternName += p.curToken.Literal
-		}
-		arm.Pattern = &ast.Identifier{Token: p.curToken, Value: patternName}
 
-		if p.peekTokenIs(lexer.LPAREN) {
-			p.nextToken()
-			for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
+		for p.peekTokenIs(lexer.DOT) || p.peekTokenIs(lexer.LPAREN) {
+			if p.peekTokenIs(lexer.DOT) {
 				p.nextToken()
-				if p.curTokenIs(lexer.IDENT) {
-					arm.Params = append(arm.Params, &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal})
+				patternName += "."
+				if !p.expectPeek(lexer.IDENT) {
+					return nil
 				}
-				if p.peekTokenIs(lexer.COMMA) {
+				patternName += p.curToken.Literal
+			} else if p.peekTokenIs(lexer.LPAREN) {
+				p.nextToken() // eat '('
+
+				var insideParens []string
+				for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
 					p.nextToken()
+					insideParens = append(insideParens, p.curToken.Literal)
+					if p.peekTokenIs(lexer.COMMA) {
+						p.nextToken()
+					}
+				}
+				p.expectPeek(lexer.RPAREN) // eat ')'
+
+				// If the NEXT token is DOT, these were generic arguments! e.g. Option(i32).Some
+				if p.peekTokenIs(lexer.DOT) {
+					patternName += "(" + strings.Join(insideParens, ", ") + ")"
+				} else if p.peekTokenIs(lexer.ARROW) {
+					// If the NEXT token is ARROW, this was the payload! e.g. .Some(val) ->
+					for _, paramName := range insideParens {
+						arm.Params = append(arm.Params, &ast.Identifier{Value: paramName})
+					}
+					break // We reached the end of the pattern
+				} else {
+					p.errors = append(p.errors, "unexpected token in match pattern after parens")
+					return nil
 				}
 			}
-			p.expectPeek(lexer.RPAREN)
 		}
+
+		arm.Pattern = &ast.Identifier{Token: p.curToken, Value: patternName}
 
 		if !p.expectPeek(lexer.ARROW) {
 			return nil
@@ -426,8 +440,8 @@ func (p *Parser) parseMatchExpression() ast.Expr {
 		if !p.expectPeek(lexer.LBRACE) {
 			return nil
 		}
-		arm.Body = p.parseBlockExpression().(*ast.Block)
 
+		arm.Body = p.parseBlockExpression().(*ast.Block)
 		expr.Arms = append(expr.Arms, arm)
 
 		if p.peekTokenIs(lexer.COMMA) {

@@ -17,7 +17,11 @@ func (b *Builder) emitBlock(block *ast.Block) string {
 			varName := n.Name.Value
 			llvmType := b.GetLLVMType(b.Pool.NodeTypes[n.Type])
 
-			reg := "%" + varName
+			// THE FIX: Make the LLVM register name universally unique!
+			uniqueID := b.nextRegID
+			b.nextRegID++
+			reg := fmt.Sprintf("%%%s_%d", varName, uniqueID)
+
 			b.EmitLine("  %s = alloca %s", reg, llvmType)
 
 			valReg := b.emitExpression(n.Value)
@@ -501,7 +505,7 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 				}
 
 				// Forge the dynamic struct and cast the pointer
-				variantStructLLVM := fmt.Sprintf("{ %s }", strings.Join(payloadLLVMTypes, ", "))
+				variantStructLLVM := fmt.Sprintf("<{ %s }>", strings.Join(payloadLLVMTypes, ", "))
 				castPtr := b.NextReg()
 				b.EmitLine("  %s = bitcast %s* %s to %s*", castPtr, enumLLVM, enumReg, variantStructLLVM)
 
@@ -798,7 +802,7 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 				for _, pt := range payloadTypes {
 					payloadLLVMTypes = append(payloadLLVMTypes, b.GetLLVMType(pt))
 				}
-				variantStructLLVM := fmt.Sprintf("{ %s }", strings.Join(payloadLLVMTypes, ", "))
+				variantStructLLVM := fmt.Sprintf("<{ %s }>", strings.Join(payloadLLVMTypes, ", "))
 
 				// Bitcast the raw buffer into our specific variant struct
 				castPtr := b.NextReg()
@@ -807,15 +811,21 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 				// Pull values out into standard local registers
 				for j, param := range arm.Params {
 					paramLLVM := b.GetLLVMType(payloadTypes[j])
-					b.EmitLine("  %%%s = alloca %s", param.Value, paramLLVM)
-					b.Locals[param.Value] = "%" + param.Value
+
+					// THE FIX: Make the LLVM register name universally unique!
+					uniqueID := b.nextRegID
+					b.nextRegID++
+					allocName := fmt.Sprintf("%s_%d", param.Value, uniqueID)
+
+					b.EmitLine("  %%%s = alloca %s", allocName, paramLLVM)
+					b.Locals[param.Value] = "%" + allocName
 
 					fieldPtr := b.NextReg()
 					b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 %d", fieldPtr, variantStructLLVM, variantStructLLVM, castPtr, j+1)
 
 					valReg := b.NextReg()
 					b.EmitLine("  %s = load %s, %s* %s", valReg, paramLLVM, paramLLVM, fieldPtr)
-					b.EmitLine("  store %s %s, %s* %%%s", paramLLVM, valReg, paramLLVM, param.Value)
+					b.EmitLine("  store %s %s, %s* %%%s", paramLLVM, valReg, paramLLVM, allocName)
 				}
 			}
 

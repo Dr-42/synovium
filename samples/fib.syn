@@ -5,33 +5,33 @@ fnc sum(a : i32, b : i32) = i32 {
     a + b
 }
 
+fnc get_qual(a : i32) = str {
+    if (a == 1) {
+        "st"
+    } elif (a == 2) {
+        "nd"
+    } elif (a == 3 && a != 11) {
+        "rd"
+    } else {
+        "th"
+    }
+}
+
 fnc main() = i32 {
+    printf("Enter the ceiling: ");
+    ceiling : i32 = 0;
+    scanf("%d", &ceiling);
     a : i32 ~= 0;
     b : i32 ~= 1;
     c : i32 ~= 0;
-    qual : str ~= "";
-    printf("Enter the ceiling: ");
-    ceiling : i32 = 0;
-    // get_num();
-    scanf("%d", &ceiling);
 
     d : i32 ~= 0;
     loop (a < ceiling) {
         d = d + 1;
-        if (((d % 10) == 1) && (d != 11)) {
-            qual = "st";
-        } elif (((d % 10) == 2) && (d != 12)) {
-            qual = "nd";
-        } elif ((d % 10) == 3 && (d != 13)) {
-            qual = "rd";
-        } else {
-            qual = "th";
-        }
-        printf("%d%s fibonacci number is %d\n", d, qual, a);
+        printf("%d%s fibonacci number is %d\n", d, get_qual(d), a);
         c = sum(a, b);
         a = b;
         b = c;
-    }
-
+    };
     ret 0;
 }

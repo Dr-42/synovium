@@ -1,0 +1,50 @@
+fnc printf(fmt: str, ...);
+
+enum Option(T: type) {
+    Some(T),
+    None,
+}
+
+enum Error(T: type, E: type) {
+    Ok(T),
+    Err(E),
+}
+
+fnc main() = i32 {
+    // 1. The compiler sees `Option(i32)`. 
+    // 2. It clones the template and dynamically generates `%Option_template_3 = type { i8, i32 }`.
+    // 3. It effortlessly parses the postfix `.Some` and constructs the enum.
+    a: Option(i32) = Option(i32).Some(69);
+
+    match a {
+        Some(val) -> {
+            printf("It works! Unboxed %d\n", val);
+        },
+        None -> {
+            printf("Empty\n");
+        }
+    };
+
+    b: Error(i32, str) = Error(i32, str).Ok(42);
+    c: Error(i32, str) = Error(i32, str).Err("Errors all the way");
+
+    match b {
+        Ok(val) -> {
+            printf("It works! Unboxed %d\n", val);
+        },
+        Err(val) -> {
+            printf("Error: %s\n", val);
+        }
+    };
+
+    match c {
+        Ok(val) -> {
+            printf("It works! Unboxed %d\n", val);
+        },
+        Err(val) -> {
+            printf("Error: %s\n", val);
+        }
+    };
+
+    ret 0;
+}

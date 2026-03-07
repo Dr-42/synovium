@@ -12,6 +12,29 @@ func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeI
 	fieldIndices := make(map[string]int) // <-- NEW
 	var totalSize uint64 = 0
 
+	// --- NEW: Template Registration ---
+	name := fmt.Sprintf("anon_struct_%d", len(e.Pool.Types))
+	if node.Name != nil {
+		name = node.Name.Value
+	}
+
+	if len(node.GenericParams) > 0 {
+		templateID := TypeID(len(e.Pool.Types))
+		e.Pool.Types = append(e.Pool.Types, UniversalType{
+			ID:         templateID,
+			Mask:       MaskIsMeta,
+			Name:       name + "_template",
+			Executable: node, // Stash AST!
+		})
+		if node.Name != nil {
+			if sym, exists := scope.Resolve(node.Name.Value); exists {
+				sym.TypeID = templateID
+				sym.IsResolved = true
+			}
+		}
+		return templateID
+	}
+
 	for i, field := range node.Fields { // <-- Note the 'i'
 		fieldTypeID := e.resolveTypeSignature(field.Type, scope)
 		if fieldTypeID == 0 {
@@ -24,8 +47,6 @@ func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeI
 		totalSize += e.Pool.Types[fieldTypeID].TrueSizeBits
 	}
 
-	// 1. Handle Anonymous Naming
-	name := fmt.Sprintf("anon_struct_%d", len(e.Pool.Types))
 	if node.Name != nil {
 		name = node.Name.Value
 	}

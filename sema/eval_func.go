@@ -101,6 +101,42 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 	}
 
 	funcType := e.Pool.Types[funcID]
+
+	// --- STRUCT/ENUM EXPRESSION INSTANTIATION ---
+	if funcType.Mask == MaskIsMeta && funcType.Executable != nil {
+		instName := funcType.Name
+		concreteArgs := make([]TypeID, len(node.Arguments))
+		for i, arg := range node.Arguments {
+			concreteArgs[i] = e.Evaluate(arg, scope)
+			instName += fmt.Sprintf("_%d", concreteArgs[i])
+		}
+
+		for _, t := range e.Pool.Types {
+			if t.Name == instName {
+				return t.ID
+			}
+		}
+
+		instScope := NewScope(scope)
+		if structNode, ok := funcType.Executable.(*ast.StructDecl); ok {
+			for i, param := range structNode.GenericParams {
+				instScope.Define(param.Name.Value, concreteArgs[i], false, param.Name)
+			}
+			cloned := ast.CloneNode(structNode).(*ast.StructDecl)
+			cloned.GenericParams = nil
+			cloned.Name = &ast.Identifier{Value: instName}
+			return e.evaluateStructDecl(cloned, instScope)
+		} else if enumNode, ok := funcType.Executable.(*ast.EnumDecl); ok {
+			for i, param := range enumNode.GenericParams {
+				instScope.Define(param.Name.Value, concreteArgs[i], false, param.Name)
+			}
+			cloned := ast.CloneNode(enumNode).(*ast.EnumDecl)
+			cloned.GenericParams = nil
+			cloned.Name = &ast.Identifier{Value: instName}
+			return e.evaluateEnumDecl(cloned, instScope)
+		}
+	}
+
 	if (funcType.Mask & MaskIsFunction) == 0 {
 		return e.error(node.Function.Span(), "attempted to call a non-function type")
 	}

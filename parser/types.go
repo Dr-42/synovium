@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+
 	"synovium/ast"
 	"synovium/lexer"
 )
@@ -61,12 +62,27 @@ func (p *Parser) parseNamedType() ast.Type {
 		endSpan = p.curToken.Span.End
 	}
 
-	return &ast.NamedType{
+	nt := &ast.NamedType{
 		Token:       tok,
 		Name:        name,
 		IsIntrinsic: intrinsicTypes[name],
 		EndSpan:     endSpan,
 	}
+
+	if p.peekTokenIs(lexer.LPAREN) {
+		p.nextToken()
+		for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
+			p.nextToken()
+			nt.GenericArgs = append(nt.GenericArgs, p.parseType())
+			if p.peekTokenIs(lexer.COMMA) {
+				p.nextToken()
+			}
+		}
+		p.expectPeek(lexer.RPAREN)
+		nt.EndSpan = p.curToken.Span.End
+	}
+
+	return nt
 }
 
 func (p *Parser) parseFunctionType() ast.Type {

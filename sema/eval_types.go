@@ -9,6 +9,29 @@ import (
 
 // evaluateEnumDecl evaluates an enum and registers it as a tagged union in the pool.
 func (e *Evaluator) evaluateEnumDecl(node *ast.EnumDecl, scope *Scope) TypeID {
+	// Template registration
+	name := fmt.Sprintf("anon_enum_%d", len(e.Pool.Types))
+	if node.Name != nil {
+		name = node.Name.Value
+	}
+
+	if len(node.GenericParams) > 0 {
+		templateID := TypeID(len(e.Pool.Types))
+		e.Pool.Types = append(e.Pool.Types, UniversalType{
+			ID:         templateID,
+			Mask:       MaskIsMeta,
+			Name:       name + "_template",
+			Executable: node, // Stash the AST!
+		})
+		if node.Name != nil {
+			if sym, exists := scope.Resolve(node.Name.Value); exists {
+				sym.TypeID = templateID
+				sym.IsResolved = true
+			}
+		}
+		return templateID
+	}
+
 	variants := make(map[string][]TypeID)
 	var maxPayloadSize uint64 = 0
 
@@ -36,7 +59,6 @@ func (e *Evaluator) evaluateEnumDecl(node *ast.EnumDecl, scope *Scope) TypeID {
 	}
 
 	// --- THE FIX: Handle Anonymous Enums ---
-	name := fmt.Sprintf("anon_enum_%d", len(e.Pool.Types))
 	if node.Name != nil {
 		name = node.Name.Value
 	}
