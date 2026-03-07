@@ -1,6 +1,5 @@
-
 // ============================================================================
-// SYNOVIUM EBNF (Standardized for Tree-sitter / Recursive Descent)
+// SYNOVIUM EBNF (Act 1: Compiler Core)
 // ============================================================================
 
 <source_file> ::= <declaration>*
@@ -13,24 +12,27 @@
                 | <function_decl>
 
 // --- 2. DATA STRUCTURES & IMPL ---
-<struct_decl> ::= "struct" <identifier> "{" <field_decl_list>? "}"
+<generic_params>  ::= "(" <parameter_list> ")"
+
+<struct_decl>     ::= "struct" <identifier>? <generic_params>? "{" <field_decl_list>? "}"
 <field_decl_list> ::= <field_decl> ( "," <field_decl> )* ","?
-<field_decl>  ::= <identifier> ":" <type>
+<field_decl>      ::= <identifier> ":" <type>
 
-<enum_decl>   ::= "enum" <identifier> "{" <variant_list>? "}"
-<variant_list>::= <variant> ( "," <variant> )* ","?
-<variant>     ::= <identifier> ( "(" <type_list> ")" )?
+<enum_decl>       ::= "enum" <identifier>? <generic_params>? "{" <variant_list>? "}"
+<variant_list>    ::= <variant> ( "," <variant> )* ","?
+<variant>         ::= <identifier> ( "(" <type_list> ")" )?
 
-<impl_decl>   ::= "impl" <identifier> "{" <function_decl>* "}"
+<impl_decl>       ::= "impl" <identifier> "{" <function_decl>* "}"
 
 // --- 3. FUNCTIONS & VARIABLES ---
-<function_decl> ::= "fnc" <identifier> "(" <parameter_list>? ")" ( <return_op> <type> )? <block>
-<parameter_list>::= <parameter> ( "," <parameter> )* ","?
-<parameter>     ::= <identifier> ":" <type>
-<return_op>     ::= ":=" | "="
+// Note: <identifier> is optional for Lambdas!
+<function_decl>   ::= "fnc" <identifier>? "(" <parameter_list>? ")" ( <return_op> <type> )? <block>?
+<parameter_list>  ::= <parameter> ( "," <parameter> )* ( "," "..." )? ","?
+<parameter>       ::= <identifier> ":" <type>
+<return_op>       ::= ":=" | "="
 
-<variable_decl> ::= <identifier> ":" <type> <assign_op> <expression>
-<assign_op>     ::= "=" | "~=" | ":=" | "+=" | "-=" | "*=" | "/=" | "%="
+<variable_decl>   ::= <identifier> ":" <type> <assign_op> <expression>
+<assign_op>       ::= "=" | "~=" | ":=" | "+=" | "-=" | "*=" | "/=" | "%="
 
 // --- 4. BLOCKS & STATEMENTS ---
 // A block is an expression itself because of "bubbling"
@@ -44,9 +46,10 @@
 
 // --- 5. TYPES ---
 <type>        ::= "*"* "&"* <base_type>
-<base_type>   ::= <identifier> ( "." <identifier> )* | "[" <type> ";" ( <expression> | ":" ) "]"
+<base_type>   ::= <identifier> ( "." <identifier> )* ( "(" <type_list> ")" )? 
+                | "[" <type> ";" ( <expression> | ":" ) "]"
                 | "fnc" "(" <type_list>? ")" ( <return_op> <type> )?
-<type_list>   ::= <type> ( "," <type> )*
+<type_list>   ::= <type> ( "," <type> )* ","?
 
 // --- 6. EXPRESSIONS (Strict C Precedence: Lowest to Highest) ---
 <expression>  ::= <assignment_expr>
@@ -94,7 +97,7 @@
 <unary_expr>  ::= ( "!" | "~" | "-" | "*" | "&" ) <unary_expr>
                 | <postfix_expr>
 
-// Precedence 1: Postfix (Left-Associative: Function calls, field access, arrays, bubbling ?)
+// Precedence 1: Postfix (Left-Associative)
 <postfix_expr>::= <primary_expr> ( <call_suffix> | <field_suffix> | <index_suffix> | "?" )*
 <call_suffix> ::= "(" <argument_list>? ")"
 <field_suffix>::= "." <identifier>
@@ -105,18 +108,18 @@
                 | <literal>
                 | "(" <expression> ")"
                 | <struct_init_expr>
+                | <array_init_expr>
                 | <if_expr>
                 | <match_expr>
                 | <loop_expr>
                 | <block> 
-                | <lambda_expr>
-
-// Lambdas are just function declarations with an optional identifier
-<lambda_expr> ::= "fnc" <identifier>? "(" <parameter_list>? ")" ( <return_op> <type> )? <block>
+                | <function_decl>   // Lambdas!
 
 <struct_init_expr> ::= <identifier> "{" <struct_init_list>? "}"
 <struct_init_list> ::= <struct_init_field> ( "," <struct_init_field> )* ","?
 <struct_init_field>::= "." <identifier> "=" <expression>
+
+<array_init_expr>  ::= "[" <expression> ( ";" <expression> | ( "," <expression> )* ","? ) "]"
 
 <if_expr>     ::= "if" <expression> <block> ( "elif" <expression> <block> )* ( "else" <block> )?
 
@@ -128,7 +131,7 @@
 <loop_cond>   ::= <variable_decl_no_semi> | <expression>
 <variable_decl_no_semi> ::= <identifier> ":" <type> <assign_op> <expression>
 
-<argument_list> ::= <expression> ( "," <expression> )* ","?
+<argument_list>  ::= <expression> ( "," <expression> )* ","?
 <identifier_list>::= <identifier> ( "," <identifier> )* ","?
 
 // --- 8. TERMINALS (Lexicon) ---
@@ -136,14 +139,10 @@
 
 <literal>     ::= <int_lit> | <float_lit> | <string_lit> | <char_lit> | "true" | "false"
 
-// Strict integer literal definitions
-<int_lit>     ::= "0" | [1-9] [0-9]* /* Base 10, no leading zeros */
-                | "0x" [0-9a-fA-F]+        /* Hexadecimal */
-                | "0o" [0-7]+              /* Octal */
-                | "0b" [01]+               /* Binary */
+<int_lit>     ::= "0" | [1-9] [0-9]* | "0x" [0-9a-fA-F]+        
+                | "0o" [0-7]+              
+                | "0b" [01]+               
 
-// Float strictly requires no leading zeros unless the integer part is exactly '0'
 <float_lit>   ::= ( "0" | [1-9] [0-9]* ) "." [0-9]+
-
 <string_lit>  ::= '"' [^"]* '"'
 <char_lit>    ::= "'" [^'] "'"
