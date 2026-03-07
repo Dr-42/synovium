@@ -110,12 +110,22 @@ func (e *Evaluator) evaluateBubbleExpr(node *ast.BubbleExpr, scope *Scope) TypeI
 		return 0
 	}
 
-	// In a complete implementation, this would check if leftID is an Enum (like `Status`),
-	// extract the "Ok" variant's type, and automatically wire the "Error" variant to return
-	// from the current function scope.
+	leftType := e.Pool.Types[leftID]
 
-	// For now, to keep the compiler unblocked, we assume it cleanly unwraps and returns the type itself.
-	return leftID
+	if leftType.Variants == nil {
+		return e.error(node.Span(), "the '?' operator can only be used on Enums")
+	}
+
+	// Unbox the "Ok" or "Some" variant
+	if payload, ok := leftType.Variants["Ok"]; ok {
+		e.Pool.NodeTypes[node] = payload[0]
+		return payload[0]
+	} else if payload, ok := leftType.Variants["Some"]; ok {
+		e.Pool.NodeTypes[node] = payload[0]
+		return payload[0]
+	}
+
+	return e.error(node.Span(), "the '?' operator requires an Enum with 'Ok' or 'Some' variants")
 }
 
 // --- DYNAMIC TYPE GENERATORS ---

@@ -1,0 +1,60 @@
+fnc printf(fmt: str, ...);
+
+// 1. Define our Generic Enums at the top
+enum Result(T: type, E: type) {
+    Ok(T),
+    Err(E)
+}
+
+enum Option(T: type) {
+    Some(T),
+    None
+}
+
+// 2. A fallible function that returns a Result
+fnc safe_divide(num: i32, denom: i32) = Result(i32, str) {
+    if denom == 0 {
+        ret Result(i32, str).Err("Division by zero!");
+    }
+    ret Result(i32, str).Ok(num / denom);
+}
+
+// 3. The magic of the '?' operator in a pipeline
+fnc process_data(a: i32, b: i32, c: i32) = Result(i32, str) {
+    // If safe_divide fails, '?' INSTANTLY returns the Err(str) to the caller.
+    // If it succeeds, '?' unwraps the Ok(i32) and assigns it directly to step1!
+    step1: i32 = safe_divide(a, b)?;
+    
+    // We can chain fallible operations linearly!
+    step2: i32 = safe_divide(step1, c)?;
+
+    ret Result(i32, str).Ok(step2 + 100);
+}
+
+fnc main() = i32 {
+    printf("--- Testing Success Path ---\n");
+    // (100 / 2) / 5 + 100 = 110
+    res1: Result(i32, str) = process_data(100, 2, 5); 
+    match res1 {
+        Ok(val) -> { printf("Success! Value: %d\n", val); },
+        Err(err) -> { printf("Failed! Reason: %s\n", err); }
+    };
+
+    printf("\n--- Testing Early Error Path ---\n");
+    // Fails on the first division
+    res2: Result(i32, str) = process_data(100, 0, 5); 
+    match res2 {
+        Ok(val) -> { printf("Success! Value: %d\n", val); },
+        Err(err) -> { printf("Failed! Reason: %s\n", err); }
+    };
+
+    printf("\n--- Testing Late Error Path ---\n");
+    // Succeeds first division, fails on the second
+    res3: Result(i32, str) = process_data(100, 2, 0); 
+    match res3 {
+        Ok(val) -> { printf("Success! Value: %d\n", val); },
+        Err(err) -> { printf("Failed! Reason: %s\n", err); }
+    };
+
+    ret 0;
+}

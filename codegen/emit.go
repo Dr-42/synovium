@@ -849,6 +849,83 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		}
 		return ""
 
+	case *ast.BubbleExpr:
+		targetReg := b.emitExpression(n.Left)
+		targetTypeID := b.Pool.NodeTypes[n.Left]
+		enumType := b.Pool.Types[targetTypeID]
+		targetLLVM := b.GetLLVMType(targetTypeID)
+
+		// 1. Move to stack to read tag
+		targetPtr := b.NextReg()
+		b.EmitLine("  %s = alloca %s", targetPtr, targetLLVM)
+		b.EmitLine("  store %s %s, %s* %s", targetLLVM, targetReg, targetLLVM, targetPtr)
+
+		tagReg := b.NextReg()
+		b.EmitLine("  %s = extractvalue %s %s, 0", tagReg, targetLLVM, targetReg)
+
+		// 2. Identify the Tags
+		var variantNames []string
+		for k := range enumType.Variants {
+			variantNames = append(variantNames, k)
+		}
+		sort.Strings(variantNames)
+
+		okIndex, errIndex := -1, -1
+		var okName string
+		for i, name := range variantNames {
+			if name == "Ok" || name == "Some" {
+				okIndex = i
+				okName = name
+			}
+			if name == "Err" || name == "None" {
+				errIndex = i
+			}
+		}
+
+		okLbl := b.NextLabel()
+		errLbl := b.NextLabel()
+		mergeLbl := b.NextLabel()
+
+		b.EmitLine("  switch i8 %s, label %%%s [", tagReg, errLbl)
+		b.EmitLine("    i8 %d, label %%%s", okIndex, okLbl)
+		b.EmitLine("    i8 %d, label %%%s", errIndex, errLbl)
+		b.EmitLine("  ]")
+
+		// --- 3. ERROR BRANCH: BUBBLE UP! ---
+		b.EmitLine("\n%s:", errLbl)
+		b.EmitLine("  ret %s %s", targetLLVM, targetReg) // Return the Enum immediately!
+
+		// --- 4. SUCCESS BRANCH: UNBOX! ---
+		b.EmitLine("\n%s:", okLbl)
+		payloadTypes := enumType.Variants[okName]
+
+		var payloadLLVMTypes []string
+		payloadLLVMTypes = append(payloadLLVMTypes, "i8")
+		for _, pt := range payloadTypes {
+			payloadLLVMTypes = append(payloadLLVMTypes, b.GetLLVMType(pt))
+		}
+		variantStructLLVM := fmt.Sprintf("<{ %s }>", strings.Join(payloadLLVMTypes, ", ")) // Packed Struct!
+
+		castPtr := b.NextReg()
+		b.EmitLine("  %s = bitcast %s* %s to %s*", castPtr, targetLLVM, targetPtr, variantStructLLVM)
+
+		payloadLLVM := b.GetLLVMType(payloadTypes[0])
+		fieldPtr := b.NextReg()
+		b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 1", fieldPtr, variantStructLLVM, variantStructLLVM, castPtr)
+
+		valReg := b.NextReg()
+		b.EmitLine("  %s = load %s, %s* %s", valReg, payloadLLVM, payloadLLVM, fieldPtr)
+
+		resultPtr := b.NextReg()
+		b.EmitLine("  %s = alloca %s", resultPtr, payloadLLVM)
+		b.EmitLine("  store %s %s, %s* %s", payloadLLVM, valReg, payloadLLVM, resultPtr)
+		b.EmitLine("  br label %%%s", mergeLbl)
+
+		b.EmitLine("\n%s:", mergeLbl)
+		finalVal := b.NextReg()
+		b.EmitLine("  %s = load %s, %s* %s", finalVal, payloadLLVM, payloadLLVM, resultPtr)
+		return finalVal
+
 	default:
 		// Gracefully skip unimplemented AST nodes (like Arrays, Loops, Match)
 		// so the compiler doesn't panic while we test!
