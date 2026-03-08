@@ -28,9 +28,9 @@ struct Player {
 impl Player {
     fnc take_hit(self: *Player, damage: f64) {
         // Match statement with block bubbling and payload extraction!
-        new_state : State := match self.state {
+        new_state : State = match self.state {
             State.Alive(health) -> {
-                rem : f64 := health - damage;
+                rem : f64 = health - damage;
                 if rem <= 0.0 {
                     printf("Player %d died!\n", self.id);
                     State.Dead(99) // Bubbles out
@@ -82,7 +82,7 @@ fnc main() = i32 {
         }
 
         // Pointers & Method Calls
-        p_ptr : *Player := &p;
+        p_ptr : *Player = &p;
         p_ptr.take_hit(60.0);
 
         if i == 3 {
@@ -92,8 +92,8 @@ fnc main() = i32 {
 
     // Generic Instantiation
     bonus : i32 := 500;
-    bonus_ptr : *i32 := &bonus;
-    final_score : i32 := p.score + unwrap_or(i32, bonus_ptr, 0);
+    bonus_ptr : *i32 = &bonus;
+    final_score : i32 = p.score + unwrap_or(i32, bonus_ptr, 0);
 
     printf("Final Score: %d\n", final_score);
 

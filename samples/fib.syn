@@ -5,7 +5,7 @@ fnc sum(a : i32, b : i32) = i32 {
     a + b
 }
 
-fnc get_qual(a : i32) = str {
+fnc get_qual(a : i32) := str {
     if (a == 1) {
         "st"
     } elif (a == 2) {

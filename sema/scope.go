@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+
 	"synovium/ast"
 )
 
@@ -19,6 +20,8 @@ type Symbol struct {
 	IsResolved bool
 
 	LLVMValue string
+
+	ComptimeData []byte
 }
 
 // Scope is a chained lexical environment.

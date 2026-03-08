@@ -245,6 +245,11 @@ func CloneNode(node Node) Node {
 			types[i] = CloneNode(t).(Type)
 		}
 		return &VariantDecl{Token: n.Token, Name: CloneNode(n.Name).(*Identifier), Types: types}
+
+	case *ComptimeBlob:
+		dataCopy := make([]byte, len(n.Data))
+		copy(dataCopy, n.Data)
+		return &ComptimeBlob{Token: n.Token, Type: n.Type, Data: dataCopy}
 	}
 
 	panic(fmt.Sprintf("CloneNode: unhandled node type %T", node))

@@ -51,6 +51,8 @@ func main() {
 	globalScope := sema.NewScope(nil)
 
 	evaluator := sema.NewEvaluator(pool, rawCode)
+	evaluator.GlobalDecls = program.Declarations
+	evaluator.JITCallback = codegen.RunJIT
 	evaluator.InjectBuiltins(globalScope)
 
 	dag := sema.NewDAG(globalScope)

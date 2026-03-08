@@ -62,7 +62,11 @@ func (b *Builder) emitBlock(block *ast.Block) string {
 func (b *Builder) emitLValue(node ast.Expr) (string, string) {
 	switch n := node.(type) {
 	case *ast.Identifier:
-		return b.Locals[n.Value], b.GetLLVMType(b.Pool.NodeTypes[n])
+		if reg, exists := b.Locals[n.Value]; exists {
+			return reg, b.GetLLVMType(b.Pool.NodeTypes[n])
+		}
+		// Never return empty strings! Force a visible LLVM error!
+		return "MISSING_LOCAL_" + n.Value, b.GetLLVMType(b.Pool.NodeTypes[n])
 
 	case *ast.FieldAccessExpr:
 		leftReg := b.emitExpression(n.Left)
@@ -925,6 +929,29 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		finalVal := b.NextReg()
 		b.EmitLine("  %s = load %s, %s* %s", finalVal, payloadLLVM, payloadLLVM, resultPtr)
 		return finalVal
+
+	case *ast.ComptimeBlob:
+		globalName := fmt.Sprintf("@.comptime.blob.%d", b.nextStringID)
+		b.nextStringID++
+
+		// Convert raw bytes to LLVM array
+		var hexBytes []string
+		for _, byt := range n.Data {
+			hexBytes = append(hexBytes, fmt.Sprintf("i8 %d", byt))
+		}
+
+		b.StringConstants = append(b.StringConstants, fmt.Sprintf("%s = private unnamed_addr constant [%d x i8] [%s]", globalName, len(n.Data), strings.Join(hexBytes, ", ")))
+
+		llvmType := b.GetLLVMType(sema.TypeID(n.Type))
+
+		castID := b.nextRegID
+		b.nextRegID++
+
+		reg := b.NextReg()
+		b.EmitLine("  %%cast_%d = bitcast [%d x i8]* %s to %s*", castID, len(n.Data), globalName, llvmType)
+		b.EmitLine("  %s = load %s, %s* %%cast_%d", reg, llvmType, llvmType, castID)
+
+		return reg
 
 	default:
 		// Gracefully skip unimplemented AST nodes (like Arrays, Loops, Match)

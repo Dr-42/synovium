@@ -17,6 +17,8 @@ type Evaluator struct {
 	ExpectedReturnType TypeID
 	ExpectedYieldType  TypeID
 	SourceCode         string
+	GlobalDecls        []ast.Decl
+	JITCallback        func(expr ast.Expr, expectedType TypeID, pool *TypePool, envScope *Scope, globalDecls []ast.Decl) ([]byte, error)
 }
 
 func NewEvaluator(pool *TypePool, sourceCode string) *Evaluator {
@@ -144,46 +146,14 @@ func (e *Evaluator) evaluateInternal(node ast.Node, scope *Scope) TypeID {
 	case *ast.StringLiteral:
 		return e.CachedPrimitives["str"]
 	case *ast.CharLiteral:
-		return e.CachedPrimitives["chr"] // ADDED!
+		return e.CachedPrimitives["chr"]
 
 	// --- 2. IDENTIFIERS & VARIABLES ---
 	case *ast.Identifier:
-		sym, exists := scope.Resolve(n.Value)
-		if !exists {
-			return e.error(n.Span(), fmt.Sprintf("undeclared identifier '%s'", n.Value))
-		}
-		if !sym.IsResolved {
-			return e.error(n.Span(), fmt.Sprintf("identifier '%s' is trapped in a comptime cycle or unresolved", n.Value))
-		}
-		return sym.TypeID
+		return e.evaluateIdentifier(n, scope)
 
 	case *ast.VariableDecl:
-		rhsType := e.Evaluate(n.Value, scope)
-		if rhsType == 0 {
-			return 0
-		}
-
-		lhsType := e.resolveTypeSignature(n.Type, scope)
-		if lhsType != 0 && !e.typesMatch(lhsType, rhsType) {
-			return e.error(n.Span(), "type mismatch in variable declaration")
-		}
-
-		isMut := n.Operator == "~="
-
-		// THE FIX: Check if the DAG hoisted this as a global variable.
-		// If it exists in the EXACT current scope and is unresolved, patch it!
-		if sym, exists := scope.Symbols[n.Name.Value]; exists && !sym.IsResolved {
-			sym.TypeID = rhsType
-			sym.IsMutable = isMut
-			sym.IsResolved = true
-		} else {
-			// Otherwise, it's a normal local variable (e.g., inside a function)
-			_, err := scope.Define(n.Name.Value, rhsType, isMut, n)
-			if err != nil {
-				return e.error(n.Span(), err.Error())
-			}
-		}
-		return rhsType
+		return e.evaluateVariableDecl(n, scope)
 
 	// --- 3. INFIX MATH & ASSIGNMENT ---
 	case *ast.InfixExpr:
@@ -242,6 +212,68 @@ func (e *Evaluator) evaluateInternal(node ast.Node, scope *Scope) TypeID {
 		return e.evaluateArrayInitExpr(n, scope)
 	}
 	return e.error(node.Span(), fmt.Sprintf("unsupported AST node for evaluation: %T", node))
+}
+
+func (e *Evaluator) evaluateIdentifier(node *ast.Identifier, scope *Scope) TypeID {
+	sym, exists := scope.Resolve(node.Value)
+	if !exists {
+		return e.error(node.Span(), fmt.Sprintf("undeclared identifier '%s'", node.Value))
+	}
+	if !sym.IsResolved {
+		return e.error(node.Span(), fmt.Sprintf("identifier '%s' is trapped in a comptime cycle or unresolved", node.Value))
+	}
+	return sym.TypeID
+}
+
+func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) TypeID {
+	rhsType := e.Evaluate(node.Value, scope)
+	if rhsType == 0 {
+		return 0
+	}
+
+	lhsType := e.resolveTypeSignature(node.Type, scope)
+	if lhsType != 0 && !e.typesMatch(lhsType, rhsType) {
+		return e.error(node.Span(), "type mismatch in variable declaration")
+	}
+
+	isMut := node.Operator == "~="
+	var comptimeData []byte
+
+	// --- COMPTIME JIT INTERCEPTOR ---
+	if node.Operator == ":=" {
+		if e.JITCallback == nil {
+			return e.error(node.Span(), "comptime JIT engine is not initialized")
+		}
+
+		data, err := e.JITCallback(node.Value, lhsType, e.Pool, scope, e.GlobalDecls)
+		if err != nil {
+			return e.error(node.Span(), err.Error()) // Pass the raw debug dump up!
+		}
+		comptimeData = data
+
+		blob := &ast.ComptimeBlob{Token: node.Token, Type: int(lhsType), Data: data}
+		node.Value = blob
+		e.Pool.NodeTypes[node.Value] = lhsType
+		rhsType = lhsType
+	}
+
+	// The DAG variable patching
+	var sym *Symbol
+	if existing, exists := scope.Symbols[node.Name.Value]; exists && !existing.IsResolved {
+		existing.TypeID = rhsType
+		existing.IsMutable = isMut
+		existing.IsResolved = true
+		sym = existing
+	} else {
+		sym, _ = scope.Define(node.Name.Value, rhsType, isMut, node)
+	}
+
+	// THE CRITICAL FIX: Lock the memory into the Environment!
+	if node.Operator == ":=" {
+		sym.ComptimeData = comptimeData
+	}
+
+	return rhsType
 }
 
 func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {

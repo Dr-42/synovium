@@ -1,0 +1,24 @@
+struct FILE {}
+
+fnc printf(fmt: str, ...);
+fnc scanf(fmt: str, ...);
+fnc fprintf(stream: *FILE, fmt: str, ...);
+fnc fopen(path: str, mode: str) = *FILE;
+fnc fclose(stream: *FILE);
+fnc exit(code: i32);
+
+stderr: *FILE = 2 as *FILE;
+
+fnc main() = i32 {
+    buf : [i8; 100] = [0 as i8; 100];
+    printf("Enter name: ");
+    scanf("%s", buf);
+    tst : *FILE = fopen("./tst.txt", "w+");
+    if (tst as u64 == 0 as u64) {
+        fprintf(stderr, "Couldn't open file");
+        exit(1);
+    }
+    fprintf(tst, "Hello %s\n", buf);
+    fclose(tst);
+    ret 0;
+}

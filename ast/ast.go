@@ -1,10 +1,10 @@
 package ast
 
-import "synovium/lexer"
+import (
+	"fmt"
 
-// ============================================================================
-// BASE INTERFACES
-// ============================================================================
+	"synovium/lexer"
+)
 
 // Node is the root interface for everything in the AST.
 // Every node must know exactly where it lives in the source code.
@@ -567,4 +567,19 @@ func (a *ArrayInitExpr) exprNode() {}
 
 func (a *ArrayInitExpr) Span() lexer.Span {
 	return lexer.Span{Start: a.Token.Span.Start, End: a.EndSpan}
+}
+
+// --- COMPTIME ---
+type ComptimeBlob struct {
+	Token lexer.Token
+	Type  int // Will hold TypeID
+	Data  []byte
+}
+
+func (cb *ComptimeBlob) exprNode() {}
+
+func (cb *ComptimeBlob) Span() lexer.Span { return cb.Token.Span }
+
+func (cb *ComptimeBlob) String() string {
+	return fmt.Sprintf("<comptime blob: %d bytes>", len(cb.Data))
 }
