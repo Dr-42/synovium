@@ -1,3 +1,4 @@
+asldklskd : i32 = 0;
 // ==========================================
 // SYNOVIUM v0.0.1 (ACT 2) - THE CRUCIBLE
 // ==========================================
@@ -32,6 +33,10 @@ impl Vec2 {
         ret Vec2{ .x = self.x + other.x, .y = self.y + other.y };
     }
 
+    fnc -(self: *Self, other: *Vec2) = Vec2 {
+        ret Vec2{ .x = self.x - other.x, .y = self.y - other.y };
+    }
+
     // Standard method mutating state
     fnc scale(self: *Self, factor: f64) {
         self.x *= factor;
@@ -53,7 +58,6 @@ fnc process_telemetry(v: f64) = Result(f64, str) {
     // The '?' operator instantly returns the Err(str) to the caller if it fails.
     // If it succeeds, it unboxes the f64 directly into `safe_v`.
     safe_v : f64 = validate_sensor(v)?; 
-    
     ret Result(f64, str).Ok(safe_v * 2.0);
 }
 
@@ -73,6 +77,7 @@ fnc main() = i32 {
     
     // --- B. OPERATOR OVERLOADING ---
     sum_vec : Vec2 = base_vec + base_vec;
+    sub_vec : Vec2 = base_vec - base_vec;
     sum_vec.scale(2.0);
     printf("[1] Vector Math:\n    X=%f, Y=%f\n", sum_vec.x, sum_vec.y);
 

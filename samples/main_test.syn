@@ -17,5 +17,13 @@ fnc main() = i32 {
 
     printf("Dynamically Loaded Matrix Sum: a=%d, b=%d\n", sum.a, sum.b);
 
+    v1 : Vec2 = Vec2{ .x = 10.5, .y = 20.5 };
+    v2 : Vec2 = Vec2{ .x = 5.0,  .y = 5.0 };
+
+    dot : f64 = v1 * v2;
+    printf("Vector 1 %f, %f\n", v1.x, v1.y);
+    printf("Vector 2 %f, %f\n", v2.x, v2.y);
+    printf("Dot Product: %f\n", dot);
+
     ret 0;
 }

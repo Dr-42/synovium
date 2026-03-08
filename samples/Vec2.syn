@@ -1,0 +1,14 @@
+struct Vec2 {
+    x: f64,
+    y: f64
+}
+
+impl Vec2 {
+    fnc +(self: *Self, other: *Vec2) = Vec2 {
+        ret Vec2{ .x = self.x + other.x, .y = self.y + other.y };
+    }
+
+    fnc *(self: *Self, vec: *Vec2) = f64 {
+        ret self.x * vec.x + self.y * vec.y;
+    }
+}

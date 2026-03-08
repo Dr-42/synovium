@@ -10,13 +10,20 @@ import (
 	"synovium/ast"
 	"synovium/codegen"
 	"synovium/lexer"
+	"synovium/lsp" // <-- Add the new package
 	"synovium/parser"
 	"synovium/sema"
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "lsp" {
+		// Launch the Language Server Protocol Daemon
+		lsp.Start()
+		os.Exit(0)
+	}
+
 	if len(os.Args) < 2 {
-		fmt.Printf("Usage: %s <file.syn>\n", os.Args[0])
+		fmt.Printf("Usage: %s <file.syn> OR %s lsp\n", os.Args[0], os.Args[0])
 		os.Exit(1)
 	}
 
@@ -54,9 +61,6 @@ func main() {
 	evaluator.GlobalDecls = program.Declarations
 	evaluator.JITCallback = codegen.RunJIT
 	evaluator.InjectBuiltins(globalScope)
-
-	parsedFiles := make(map[string]bool)
-	parsedFiles[filename] = true
 
 	dag := sema.NewDAG(globalScope)
 
