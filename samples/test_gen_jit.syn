@@ -41,6 +41,7 @@ fnc main() = i32 {
     // pass it to the generic function, execute the math natively in LLVM, 
     // and return the final struct memory!
     scaled_vec : Vector3(f64) := scale_vector(f64, base_vec, 10.0);
+    another_vec : Vector3(f64) = scale_vector(f64, base_vec, 20.0);
 
 
     // --- RUNTIME PHASE (=) ---
@@ -59,6 +60,7 @@ fnc main() = i32 {
 
     // Verify Struct Memory Layout and JIT Math survived
     printf("Scaled Vector: X=%f, Y=%f, Z=%f\n", scaled_vec.x, scaled_vec.y, scaled_vec.z);
+    printf("Another Vector: X=%f, Y=%f, Z=%f\n", another_vec.x, another_vec.y, another_vec.z);
 
     ret 0;
 }

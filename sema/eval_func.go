@@ -195,15 +195,45 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 	// --- GENERIC MONOMORPHIZATION ROUTINE ---
 	if isGenericCall && funcType.Executable != nil {
 		originalDecl := funcType.Executable.(*ast.FunctionDecl)
+
+		// 1. Build a deterministic, unique name based on the provided generic type arguments
+		specializedName := originalDecl.Name.Value + "_inst"
+		for i := range originalDecl.Parameters {
+			if funcType.FuncParams[i] == e.CachedPrimitives["type"] {
+				concreteTypeID := e.Evaluate(node.Arguments[i], scope)
+				if concreteTypeID == 0 {
+					return 0
+				}
+				specializedName += fmt.Sprintf("_%d", concreteTypeID)
+			}
+		}
+
+		// 2. Prevent Duplicate Function Instantiations!
+		for _, t := range e.Pool.Types {
+			if t.Name == specializedName && (t.Mask&MaskIsFunction) != 0 {
+				e.Pool.NodeTypes[node.Function] = t.ID
+
+				// --- THE CRITICAL STEP : Stamp the arguments! ---
+				// Even if the function is cached, we MUST evaluate the arguments for this
+				// specific CallExpr so Codegen knows their types and doesn't emit 'void'!
+				for _, arg := range node.Arguments {
+					if e.Evaluate(arg, scope) == 0 {
+						return 0
+					}
+				}
+				// ----------------------------------------------
+
+				return t.FuncReturn
+			}
+		}
+
+		// 3. Otherwise, do the full instantiation
 		decl := ast.CloneNode(originalDecl).(*ast.FunctionDecl)
 		instScope := NewScope(scope)
 
 		for i, param := range decl.Parameters {
 			if funcType.FuncParams[i] == e.CachedPrimitives["type"] {
 				concreteTypeID := e.Evaluate(node.Arguments[i], scope)
-				if concreteTypeID == 0 {
-					return 0
-				}
 				instScope.Define(param.Name.Value, concreteTypeID, false, param.Name)
 			}
 		}
@@ -222,14 +252,12 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			concreteRet = e.resolveTypeSignature(decl.ReturnType, instScope)
 		}
 
-		// THE FIX: Use typesMatch for generic arguments and skip variadics safely
 		for i, arg := range node.Arguments {
 			argType := e.Evaluate(arg, scope)
 			if argType == 0 {
 				return 0
 			}
 
-			// If it's variadic and we're past the named parameters, skip type checking!
 			if funcType.IsVariadic && i >= len(concreteParams) {
 				continue
 			}
@@ -252,11 +280,10 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 			return e.error(decl.Body.Span(), "generic function body bubbles a type different from its instantiated signature")
 		}
 
-		specializedName := fmt.Sprintf("%s_inst_%d", decl.Name.Value, concreteRet)
 		specializedFunc := UniversalType{
 			ID:         TypeID(len(e.Pool.Types)),
 			Mask:       MaskIsFunction,
-			Name:       specializedName,
+			Name:       specializedName, // Assign the unique name here!
 			FuncParams: concreteParams,
 			FuncReturn: concreteRet,
 			IsVariadic: decl.IsVariadic,
@@ -277,7 +304,6 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 		argOffset = 1
 	}
 
-	// THE FIX: Variadic skip in the standard loop
 	for i, arg := range node.Arguments {
 		argType := e.Evaluate(arg, scope)
 		if argType == 0 {
@@ -286,7 +312,6 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 
 		paramIndex := i + argOffset
 
-		// If it's variadic and we're past the named parameters, skip type checking!
 		if funcType.IsVariadic && paramIndex >= expectedArgs {
 			continue
 		}
