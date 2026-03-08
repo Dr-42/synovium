@@ -226,14 +226,11 @@ func (e *Evaluator) evaluateIdentifier(node *ast.Identifier, scope *Scope) TypeI
 }
 
 func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) TypeID {
-	// --- 1. EXTERN VARIABLES (e.g. stderr: *FILE;) ---
 	if node.Value == nil {
 		lhsType := e.resolveTypeSignature(node.Type, scope)
 		if lhsType == 0 {
 			return 0
 		}
-
-		// THE DAG PATCH FIX
 		if existing, exists := scope.Symbols[node.Name.Value]; exists && !existing.IsResolved {
 			existing.TypeID = lhsType
 			existing.IsMutable = false
@@ -244,12 +241,10 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 				sym.IsResolved = true
 			}
 		}
-
 		e.Pool.NodeTypes[node] = lhsType
 		return lhsType
 	}
 
-	// --- 2. STANDARD VARIABLES ---
 	rhsType := e.Evaluate(node.Value, scope)
 	if rhsType == 0 {
 		return 0
@@ -263,25 +258,39 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 	isMut := node.Operator == "~="
 	var comptimeData []byte
 
-	// --- 3. COMPTIME JIT INTERCEPTOR ---
 	if node.Operator == ":=" {
-		if e.JITCallback == nil {
-			return e.error(node.Span(), "comptime JIT engine is not initialized")
-		}
+		// --- THE FIX: SMART JIT BYPASS FOR POINTERS ---
+		if e.hasPointers(lhsType) {
+			if e.isPureLiteral(node.Value) {
+				// Bypass JIT! Leave the AST node intact so Codegen allocates it safely natively.
+				rhsType = lhsType
+			} else {
+				return e.error(node.Span(), "cannot JIT evaluate dynamic expressions containing pointers (memory addresses cannot safely cross process boundaries)")
+			}
+		} else {
+			// Standard JIT evaluation for pure packed data!
+			if e.JITCallback == nil {
+				return e.error(node.Span(), "comptime JIT engine is not initialized")
+			}
+			data, err := e.JITCallback(node.Value, lhsType, e.Pool, scope, e.GlobalDecls)
+			if err != nil {
+				return e.error(node.Span(), err.Error())
+			}
+			comptimeData = data
 
-		data, err := e.JITCallback(node.Value, lhsType, e.Pool, scope, e.GlobalDecls)
-		if err != nil {
-			return e.error(node.Span(), err.Error())
-		}
-		comptimeData = data
+			span := node.Value.Span()
+			sourceSnippet := ""
+			if span.Start >= 0 && span.End <= len(e.SourceCode) && span.Start <= span.End {
+				sourceSnippet = e.SourceCode[span.Start:span.End]
+			}
 
-		blob := &ast.ComptimeBlob{Token: node.Token, Type: int(lhsType), Data: data}
-		node.Value = blob
-		e.Pool.NodeTypes[node.Value] = lhsType
-		rhsType = lhsType
+			blob := &ast.ComptimeBlob{Token: node.Token, Type: int(lhsType), Data: data, SourceCode: sourceSnippet}
+			node.Value = blob
+			e.Pool.NodeTypes[node.Value] = lhsType
+			rhsType = lhsType
+		}
 	}
 
-	// --- 4. DAG VARIABLE PATCHING ---
 	var sym *Symbol
 	if existing, exists := scope.Symbols[node.Name.Value]; exists && !existing.IsResolved {
 		existing.TypeID = rhsType
@@ -292,12 +301,67 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 		sym, _ = scope.Define(node.Name.Value, rhsType, isMut, node)
 	}
 
-	// Lock the memory into the Environment safely!
 	if node.Operator == ":=" && sym != nil {
 		sym.ComptimeData = comptimeData
 	}
-
 	return rhsType
+}
+
+// --- NEW HELPER METHODS ---
+
+// hasPointers recursively checks if a type contains any C-ABI pointers.
+func (e *Evaluator) hasPointers(id TypeID) bool {
+	if id == 0 {
+		return false
+	}
+	t := e.Pool.Types[id]
+	if (t.Mask&MaskIsPointer) != 0 || t.Name == "str" {
+		return true
+	}
+	if (t.Mask & MaskIsArray) != 0 {
+		return e.hasPointers(t.BaseType)
+	}
+	if (t.Mask & MaskIsStruct) != 0 {
+		for _, fID := range t.FieldLayout {
+			if e.hasPointers(fID) {
+				return true
+			}
+		}
+		for _, payloads := range t.Variants {
+			for _, pID := range payloads {
+				if e.hasPointers(pID) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isPureLiteral checks if an AST tree contains only constants, completely free of runtime logic.
+func (e *Evaluator) isPureLiteral(expr ast.Expr) bool {
+	switch n := expr.(type) {
+	case *ast.IntLiteral, *ast.FloatLiteral, *ast.BoolLiteral, *ast.StringLiteral:
+		return true
+	case *ast.ArrayInitExpr:
+		for _, el := range n.Elements {
+			if !e.isPureLiteral(el) {
+				return false
+			}
+		}
+		if n.Count != nil && !e.isPureLiteral(n.Count) {
+			return false
+		}
+		return true
+	case *ast.StructInitExpr:
+		for _, f := range n.Fields {
+			if !e.isPureLiteral(f.Value) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {

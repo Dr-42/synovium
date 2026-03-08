@@ -136,7 +136,7 @@ func main() {
 	fmt.Println("\n================================================")
 
 	// Optional: Clean up the generated files
-	os.Remove(llFilename)
+	// os.Remove(llFilename)
 	os.Remove(exeFilename)
 }
 

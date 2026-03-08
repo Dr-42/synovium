@@ -571,9 +571,10 @@ func (a *ArrayInitExpr) Span() lexer.Span {
 
 // --- COMPTIME ---
 type ComptimeBlob struct {
-	Token lexer.Token
-	Type  int // Will hold TypeID
-	Data  []byte
+	Token      lexer.Token
+	Type       int // Will hold TypeID
+	Data       []byte
+	SourceCode string
 }
 
 func (cb *ComptimeBlob) exprNode() {}

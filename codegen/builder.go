@@ -115,8 +115,9 @@ func (b *Builder) Generate(program []ast.Decl) string {
 
 	// 3. Global Strings
 	for _, strDef := range b.StringConstants {
-		b.EmitLine(strDef)
+		b.EmitLine("%s", strDef)
 	}
+	b.StringConstants = nil
 
 	return b.Output.String()
 }

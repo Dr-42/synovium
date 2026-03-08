@@ -143,8 +143,7 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		b.nextStringID++
 
 		llvmStr := strings.ReplaceAll(n.Value, "\n", "\\0A")
-		// THE FIX: Escape '%' so Go's fmt.Sprintf doesn't panic!
-		llvmStr = strings.ReplaceAll(llvmStr, "%", "%%")
+		// (We DO NOT replace "%" with "%%" because it is passed as a %s argument!)
 
 		b.StringConstants = append(b.StringConstants, fmt.Sprintf("%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"", globalName, strLen, llvmStr))
 

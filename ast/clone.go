@@ -249,7 +249,7 @@ func CloneNode(node Node) Node {
 	case *ComptimeBlob:
 		dataCopy := make([]byte, len(n.Data))
 		copy(dataCopy, n.Data)
-		return &ComptimeBlob{Token: n.Token, Type: n.Type, Data: dataCopy}
+		return &ComptimeBlob{Token: n.Token, Type: n.Type, Data: dataCopy, SourceCode: n.SourceCode}
 	}
 
 	panic(fmt.Sprintf("CloneNode: unhandled node type %T", node))

@@ -53,7 +53,7 @@ func (e *Evaluator) InjectBuiltins(globalScope *Scope) {
 	forge("f64", MaskIsNumeric|MaskIsFloat|MaskIsSigned|(4<<RankShift), 64, "double", true)
 
 	// 4. Strings
-	forge("str", MaskIsStruct, 128, "{ i64, i8* }", true)
+	forge("str", MaskIsPointer, 64, "i8*", true)
 
 }
 
