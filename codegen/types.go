@@ -3,18 +3,41 @@ package codegen
 import (
 	"fmt"
 	"strings"
+
 	"synovium/sema"
 )
 
 func (b *Builder) emitTypeDeclarations() {
 	for _, t := range b.Pool.Types {
 		if (t.Mask & sema.MaskIsStruct) != 0 {
+
+			// --- Skip Dummy Template Structs ---
+			isDummy := false
+			for _, fieldTypeID := range t.FieldLayout {
+				// If any field is a template placeholder, the whole struct is a dummy!
+				if b.Pool.Types[fieldTypeID].Mask == 0 {
+					isDummy = true
+					break
+				}
+			}
+			for _, payloads := range t.Variants {
+				for _, pID := range payloads {
+					if b.Pool.Types[pID].Mask == 0 {
+						isDummy = true
+						break
+					}
+				}
+			}
+			if isDummy {
+				continue // Do not emit this struct to LLVM!
+			}
+			// --------------------------------------------
+
 			if len(t.Variants) > 0 {
 				payloadBytes := (t.TrueSizeBits - 8) / 8
 				b.EmitLine("%%%s = type { i8, [%d x i8] }", t.Name, payloadBytes)
 			} else {
 				fieldTypes := make([]string, 0)
-				// Iterate over the ordered FieldLayout instead of the chaotic map!
 				for _, fieldTypeID := range t.FieldLayout {
 					fieldTypes = append(fieldTypes, b.GetLLVMType(fieldTypeID))
 				}
@@ -23,6 +46,8 @@ func (b *Builder) emitTypeDeclarations() {
 		}
 	}
 }
+
+// ... [Keep GetLLVMType exactly as it is]
 
 func (b *Builder) GetLLVMType(id sema.TypeID) string {
 	if int(id) >= len(b.Pool.Types) {

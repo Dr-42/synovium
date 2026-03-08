@@ -77,12 +77,14 @@ func (e *Evaluator) evaluateStructDecl(node *ast.StructDecl, scope *Scope) TypeI
 }
 
 func (e *Evaluator) evaluateStructInit(node *ast.StructInitExpr, scope *Scope) TypeID {
-	structSym, exists := scope.Resolve(node.Name.Value)
-	if !exists || !structSym.IsResolved {
-		return e.error(node.Name.Span(), "undeclared or unresolved struct: "+node.Name.Value)
+	// --- Dynamically Evaluate the Name ---
+	// This naturally triggers Monomorphization if it's a CallExpr like Vector3(f64)!
+	targetTypeID := e.Evaluate(node.Name, scope)
+	if targetTypeID == 0 {
+		return 0
 	}
 
-	targetType := e.Pool.Types[structSym.TypeID]
+	targetType := e.Pool.Types[targetTypeID]
 	if (targetType.Mask & MaskIsStruct) == 0 {
 		return e.error(node.Name.Span(), "cannot initialize a non-struct type")
 	}

@@ -468,8 +468,8 @@ func (l *LoopExpr) Span() lexer.Span {
 }
 
 type StructInitExpr struct {
-	Token   lexer.Token // The identifier before '{'
-	Name    *Identifier
+	Token   lexer.Token // The '{' token
+	Name    Expr        // <-- CHANGED: Now it can be an Identifier or CallExpr!
 	Fields  []*StructInitField
 	EndSpan int
 }

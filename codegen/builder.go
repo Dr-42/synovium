@@ -46,6 +46,22 @@ func (b *Builder) EmitLine(format string, args ...any) {
 	b.Output.WriteString(fmt.Sprintf(format+"\n", args...))
 }
 
+func (b *Builder) isGenericFunction(id sema.TypeID) bool {
+	if int(id) >= len(b.Pool.Types) {
+		return false
+	}
+	t := b.Pool.Types[id]
+	for _, pID := range t.FuncParams {
+		if int(pID) < len(b.Pool.Types) {
+			// If a parameter is 'type' OR a dummy template placeholder
+			if b.Pool.Types[pID].Name == "type" || b.Pool.Types[pID].Mask == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (b *Builder) Generate(program []ast.Decl) string {
 	b.emitTypeDeclarations()
 	b.EmitLine("")
@@ -53,14 +69,20 @@ func (b *Builder) Generate(program []ast.Decl) string {
 	// 1. Top-Level Functions & Impl Methods
 	for _, decl := range program {
 		if fn, ok := decl.(*ast.FunctionDecl); ok {
-			b.emitFunction(fn, b.Pool.NodeTypes[fn])
+			funcTypeID := b.Pool.NodeTypes[fn]
+			// Skip generic template definitions!
+			if !b.isGenericFunction(funcTypeID) {
+				b.emitFunction(fn, funcTypeID)
+			}
 		} else if impl, ok := decl.(*ast.ImplDecl); ok {
-			// THE FIX: Safely find the Target Struct by Name
 			for _, t := range b.Pool.Types {
 				if t.Name == impl.Target.Value {
 					for _, fn := range impl.Methods {
 						if methodID, exists := t.Methods[fn.Name.Value]; exists {
-							b.emitFunction(fn, methodID)
+							// Skip generic method definitions!
+							if !b.isGenericFunction(methodID) {
+								b.emitFunction(fn, methodID)
+							}
 						}
 					}
 					break
@@ -73,6 +95,7 @@ func (b *Builder) Generate(program []ast.Decl) string {
 	for _, t := range b.Pool.Types {
 		if (t.Mask&sema.MaskIsFunction) != 0 && strings.Contains(t.Name, "_inst_") {
 			if fn, ok := t.Executable.(*ast.FunctionDecl); ok {
+				// The concrete instantiations WILL be emitted here!
 				b.emitFunction(fn, t.ID)
 			}
 		}

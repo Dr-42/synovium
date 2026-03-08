@@ -103,6 +103,25 @@ func (p *Parser) parseStructDecl() ast.Decl {
 		decl.Name = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
 	}
 
+	// Parse Generics BEFORE the left brace!
+	if p.peekTokenIs(lexer.LPAREN) {
+		p.nextToken()
+		for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
+			p.nextToken()
+			param := &ast.Parameter{Name: &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}}
+			if !p.expectPeek(lexer.COLON) {
+				return nil
+			}
+			p.nextToken()
+			param.Type = p.parseType()
+			decl.GenericParams = append(decl.GenericParams, param)
+			if p.peekTokenIs(lexer.COMMA) {
+				p.nextToken()
+			}
+		}
+		p.expectPeek(lexer.RPAREN)
+	}
+
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
 	}
@@ -113,23 +132,7 @@ func (p *Parser) parseStructDecl() ast.Decl {
 			Token: p.curToken,
 			Name:  &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
 		}
-		if p.peekTokenIs(lexer.LPAREN) {
-			p.nextToken()
-			for !p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.EOF) {
-				p.nextToken()
-				param := &ast.Parameter{Name: &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}}
-				if !p.expectPeek(lexer.COLON) {
-					return nil
-				}
-				p.nextToken()
-				param.Type = p.parseType()
-				decl.GenericParams = append(decl.GenericParams, param)
-				if p.peekTokenIs(lexer.COMMA) {
-					p.nextToken()
-				}
-			}
-			p.expectPeek(lexer.RPAREN)
-		}
+
 		if !p.expectPeek(lexer.COLON) {
 			return nil
 		}

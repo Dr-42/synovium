@@ -1,0 +1,64 @@
+fnc printf(fmt: str, ...);
+
+// ==========================================
+// 1. GENERIC DEFINITIONS
+// ==========================================
+enum Option(T: type) {
+    Some(T),
+    None
+}
+
+struct Vector3(T: type) {
+    x: T,
+    y: T,
+    z: T
+}
+
+// A generic function that we will force the JIT to execute at compile-time!
+fnc scale_vector(T: type, vec: Vector3(T), scalar: T) = Vector3(T) {
+    ret Vector3(T){
+        .x = vec.x * scalar,
+        .y = vec.y * scalar,
+        .z = vec.z * scalar
+    };
+}
+
+// ==========================================
+// 2. EXECUTION
+// ==========================================
+fnc main() = i32 {
+    // --- COMPTIME PHASE (:=) ---
+    
+    // The JIT monomorphizes Option(i32), generates the packed struct,
+    // and dumps the C-ABI aligned memory directly to the .data section.
+    opt_val : Option(i32) := Option(i32).Some(999);
+    opt_emp : Option(i32) := Option(i32).None;
+
+    // The JIT instantiates Vector3(f64).
+    base_vec : Vector3(f64) := Vector3(f64){ .x = 1.5, .y = 2.5, .z = 3.5 };
+    
+    // THE ULTIMATE TEST: The JIT must capture `base_vec` from the environment,
+    // pass it to the generic function, execute the math natively in LLVM, 
+    // and return the final struct memory!
+    scaled_vec : Vector3(f64) := scale_vector(f64, base_vec, 10.0);
+
+
+    // --- RUNTIME PHASE (=) ---
+    printf("--- GENERIC JIT COMPTIME TEST ---\n");
+
+    // Verify Enum Memory Layouts survived the JIT bridge
+    match opt_val {
+        Some(val) -> { printf("opt_val Unboxed: %d\n", val); },
+        None -> { printf("opt_val is empty\n"); }
+    };
+
+    match opt_emp {
+        Some(val) -> { printf("opt_emp Unboxed: %d\n", val); },
+        None -> { printf("opt_emp is empty\n"); }
+    };
+
+    // Verify Struct Memory Layout and JIT Math survived
+    printf("Scaled Vector: X=%f, Y=%f, Z=%f\n", scaled_vec.x, scaled_vec.y, scaled_vec.z);
+
+    ret 0;
+}

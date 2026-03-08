@@ -144,7 +144,7 @@ func CloneNode(node Node) Node {
 		for i, f := range n.Fields {
 			fields[i] = CloneNode(f).(*StructInitField)
 		}
-		return &StructInitExpr{Token: n.Token, Name: CloneNode(n.Name).(*Identifier), Fields: fields}
+		return &StructInitExpr{Token: n.Token, Name: CloneNode(n.Name).(Expr), Fields: fields, EndSpan: n.EndSpan}
 	case *StructInitField:
 		return &StructInitField{Token: n.Token, Name: CloneNode(n.Name).(*Identifier), Value: CloneNode(n.Value).(Expr)}
 	case *MatchExpr:

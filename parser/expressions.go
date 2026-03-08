@@ -10,10 +10,13 @@ import (
 
 // --- PREFIX IMPLEMENTATIONS ---
 func (p *Parser) parseIdentifier() ast.Expr {
+	ident := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+
+	// If followed by '{', morph into Struct Init!
 	if !p.disallowStructInit && p.peekTokenIs(lexer.LBRACE) {
-		return p.parseStructInitExpression()
+		return p.parseStructInitExpression(ident)
 	}
-	return &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+	return ident
 }
 
 func (p *Parser) parseIntLiteral() ast.Expr {
@@ -144,6 +147,13 @@ func (p *Parser) parseCallExpression(left ast.Expr) ast.Expr {
 	}
 	expr.Arguments = p.parseExpressionList(lexer.RPAREN)
 	expr.EndSpan = p.curToken.Span.End
+
+	// --- THE FIX: Generic Struct Initialization ---
+	// If Vector3(f64) is followed by '{', morph it into a Struct Init!
+	if !p.disallowStructInit && p.peekTokenIs(lexer.LBRACE) {
+		return p.parseStructInitExpression(expr)
+	}
+
 	return expr
 }
 
@@ -456,11 +466,10 @@ func (p *Parser) parseMatchExpression() ast.Expr {
 	return expr
 }
 
-func (p *Parser) parseStructInitExpression() ast.Expr {
-	// We are currently sitting on the IDENTifier before the '{'
+func (p *Parser) parseStructInitExpression(name ast.Expr) ast.Expr {
 	expr := &ast.StructInitExpr{
-		Token: p.curToken,
-		Name:  &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal},
+		Token: p.peekToken, // The '{' token
+		Name:  name,
 	}
 
 	p.nextToken() // move to '{'
@@ -487,7 +496,6 @@ func (p *Parser) parseStructInitExpression() ast.Expr {
 
 		expr.Fields = append(expr.Fields, field)
 
-		// Consume optional comma
 		if p.peekTokenIs(lexer.COMMA) {
 			p.nextToken()
 		}
