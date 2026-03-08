@@ -65,7 +65,7 @@ func CloneNode(node Node) Node {
 			IsVariadic: n.IsVariadic,
 		}
 
-	// -- Statements --
+		// -- Statements --
 	case *Block:
 		stmts := make([]Stmt, len(n.Statements))
 		for i, s := range n.Statements {
@@ -84,14 +84,18 @@ func CloneNode(node Node) Node {
 			val = CloneNode(n.Value).(Expr)
 		}
 		return &ReturnStmt{Token: n.Token, Value: val}
-	case *YieldStmt:
+	case *DeferStmt: // Replaced YieldStmt
+		return &DeferStmt{Token: n.Token, Body: CloneNode(n.Body).(Stmt)}
+	case *BreakStmt: // Upgraded
+		var lbl *Identifier
+		if n.Label != nil {
+			lbl = CloneNode(n.Label).(*Identifier)
+		}
 		var val Expr
 		if n.Value != nil {
 			val = CloneNode(n.Value).(Expr)
 		}
-		return &YieldStmt{Token: n.Token, Value: val}
-	case *BreakStmt:
-		return &BreakStmt{Token: n.Token}
+		return &BreakStmt{Token: n.Token, Label: lbl, Value: val}
 
 	// -- Expressions --
 	case *InfixExpr:
@@ -130,11 +134,15 @@ func CloneNode(node Node) Node {
 			ElseBody:   elseBody,
 		}
 	case *LoopExpr:
+		var lbl *Identifier
+		if n.Label != nil {
+			lbl = CloneNode(n.Label).(*Identifier)
+		}
 		var cond Node
 		if n.Condition != nil {
 			cond = CloneNode(n.Condition)
 		}
-		return &LoopExpr{Token: n.Token, Condition: cond, Body: CloneNode(n.Body).(*Block)}
+		return &LoopExpr{Token: n.Token, Label: lbl, Condition: cond, Body: CloneNode(n.Body).(*Block)}
 	case *CastExpr:
 		return &CastExpr{Token: n.Token, Left: CloneNode(n.Left).(Expr), Type: CloneNode(n.Type).(Type)}
 	case *BubbleExpr:

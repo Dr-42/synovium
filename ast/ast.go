@@ -457,14 +457,20 @@ func (m *MatchArm) Span() lexer.Span {
 
 type LoopExpr struct {
 	Token     lexer.Token // The 'loop' token
-	Condition Node        // Can be an Expr OR a VariableDecl (e.g., i: i32 = 0...10)
+	Label     *Identifier // Optional (e.g., `outer loop`)
+	Condition Node        // Can be an Expr OR a VariableDecl
 	Body      *Block
 }
 
 func (l *LoopExpr) exprNode() {}
 
 func (l *LoopExpr) Span() lexer.Span {
-	return lexer.Span{Start: l.Token.Span.Start, End: l.Body.Span().End}
+	start := l.Token.Span.Start
+	if l.Label != nil {
+		// Assuming the backtick is immediately before the identifier
+		start = l.Label.Span().Start - 1
+	}
+	return lexer.Span{Start: start, End: l.Body.Span().End}
 }
 
 type StructInitExpr struct {
@@ -534,27 +540,34 @@ func (r *ReturnStmt) Span() lexer.Span {
 	return r.Token.Span
 }
 
-type YieldStmt struct {
-	Token lexer.Token // 'yld'
-	Value Expr        // Optional
+type DeferStmt struct {
+	Token lexer.Token // 'defer'
+	Body  Stmt        // Can be a block or a single statement
 }
 
-func (y *YieldStmt) stmtNode() {}
+func (d *DeferStmt) stmtNode() {}
 
-func (y *YieldStmt) Span() lexer.Span {
-	if y.Value != nil {
-		return lexer.Span{Start: y.Token.Span.Start, End: y.Value.Span().End}
-	}
-	return y.Token.Span
+func (d *DeferStmt) Span() lexer.Span {
+	return lexer.Span{Start: d.Token.Span.Start, End: d.Body.Span().End}
 }
 
 type BreakStmt struct {
 	Token lexer.Token // 'brk'
+	Label *Identifier // Optional target loop label
+	Value Expr        // Optional bubble value
 }
 
 func (b *BreakStmt) stmtNode() {}
 
-func (b *BreakStmt) Span() lexer.Span { return b.Token.Span }
+func (b *BreakStmt) Span() lexer.Span {
+	if b.Value != nil {
+		return lexer.Span{Start: b.Token.Span.Start, End: b.Value.Span().End}
+	}
+	if b.Label != nil {
+		return lexer.Span{Start: b.Token.Span.Start, End: b.Label.Span().End}
+	}
+	return b.Token.Span
+}
 
 type ArrayInitExpr struct {
 	Token    lexer.Token // The '[' token

@@ -119,7 +119,7 @@ func main() {
 		fmt.Printf("❌ Clang compilation failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✅ Compilation successful! Executing binary...\n")
+	fmt.Println("✅ Compilation successful! Executing binary...")
 	fmt.Println("================ PROGRAM OUTPUT ================")
 
 	// 3. Run the compiled binary!

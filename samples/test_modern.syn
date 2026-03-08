@@ -1,0 +1,114 @@
+// ==========================================
+// SYNOVIUM v0.0.1 (ACT 2) - THE CRUCIBLE
+// ==========================================
+
+fnc printf(fmt: str, ...);
+
+// ------------------------------------------
+// 1. GENERICS, TAGGED UNIONS, & ALGEBRAIC TYPES
+// ------------------------------------------
+enum Option(T: type) {
+    Some(T),
+    None
+}
+
+enum Result(T: type, E: type) {
+    Ok(T),
+    Err(E)
+}
+
+// ------------------------------------------
+// 2. STRUCTS, IMPL BLOCKS, & OPERATOR OVERLOADING
+// ------------------------------------------
+struct Vec2 {
+    x: f64,
+    y: f64
+}
+
+impl Vec2 {
+    // Overload the '+' operator. Takes pointers for zero-copy,
+    // but the compiler auto-references values at the call site!
+    fnc +(self: *Self, other: *Vec2) = Vec2 {
+        ret Vec2{ .x = self.x + other.x, .y = self.y + other.y };
+    }
+
+    // Standard method mutating state
+    fnc scale(self: *Self, factor: f64) {
+        self.x *= factor;
+        self.y *= factor;
+    }
+}
+
+// ------------------------------------------
+// 3. ERROR BUBBLING & PIPELINES
+// ------------------------------------------
+fnc validate_sensor(val: f64) = Result(f64, str) {
+    if val > 100.0 {
+        ret Result(f64, str).Err("Core temperature exceeded limit!");
+    }
+    ret Result(f64, str).Ok(val);
+}
+
+fnc process_telemetry(v: f64) = Result(f64, str) {
+    // The '?' operator instantly returns the Err(str) to the caller if it fails.
+    // If it succeeds, it unboxes the f64 directly into `safe_v`.
+    safe_v : f64 = validate_sensor(v)?; 
+    
+    ret Result(f64, str).Ok(safe_v * 2.0);
+}
+
+// ------------------------------------------
+// 4. MAIN EXECUTION (THE ACT 2 SHOWCASE)
+// ------------------------------------------
+fnc main() = i32 {
+    // Act 2: Deferred execution guarantees this runs right before `ret`!
+    defer printf("\n--- Synovium Execution Completed Successfully ---\n");
+
+    printf("--- Synovium Act 2 Test Suite ---\n\n");
+
+    // --- A. COMPTIME JIT SUBPROCESS (:=) ---
+    // The compiler spins up LLVM in the background, allocates this, 
+    // and writes it directly to the host executable's .data section.
+    base_vec : Vec2 := Vec2{ .x = 10.5, .y = 20.5 };
+    
+    // --- B. OPERATOR OVERLOADING ---
+    sum_vec : Vec2 = base_vec + base_vec;
+    sum_vec.scale(2.0);
+    printf("[1] Vector Math:\n    X=%f, Y=%f\n", sum_vec.x, sum_vec.y);
+
+    // --- C. LABELED LOOPS & BITWISE ASSIGNMENT (ACT 2) ---
+    mask : i32 = 0;
+    
+    // The entire loop block yields a value!
+    found_val : i32 = `search loop (i : i32 = 0...10) {
+        
+        mask |= (1 << i); // Act 2: Bitwise assignment operators
+        
+        loop (j : i32 = 0...5) {
+            if i + j == 12 {
+                // Act 2: Break to a specific label and bubble a payload out!
+                brk `search (i * j); 
+            }
+        }
+    };
+    
+    printf("\n[2] Nested Matrix Search:\n    Target found: %d (Mask state: %d)\n", found_val, mask);
+
+    // --- D. PATTERN MATCHING & BLOCK BUBBLING ---
+    res : Result(f64, str) = process_telemetry(150.0);
+    
+    printf("\n[3] Pattern Matching:\n");
+    // Match block yields an i32 to represent our OS exit code
+    exit_code : i32 = match res {
+        Ok(val) -> {
+            printf("    Process Succeeded: %f\n", val);
+            0 // Bubbles out of the Ok arm
+        },
+        Err(msg) -> {
+            printf("    Process Failed: %s\n", msg);
+            1 // Bubbles out of the Err arm
+        }
+    };
+
+    ret exit_code;
+}

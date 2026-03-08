@@ -27,14 +27,19 @@ const (
 	STRING TokenType = "STRING"
 	CHAR   TokenType = "CHAR"
 
-	ASSIGN      TokenType = "="
-	DECL_ASSIGN TokenType = ":="
-	MUT_ASSIGN  TokenType = "~="
-	PLUS_ASSIGN TokenType = "+="
-	MIN_ASSIGN  TokenType = "-="
-	MUL_ASSIGN  TokenType = "*="
-	DIV_ASSIGN  TokenType = "/="
-	MOD_ASSIGN  TokenType = "%="
+	ASSIGN         TokenType = "="
+	DECL_ASSIGN    TokenType = ":="
+	MUT_ASSIGN     TokenType = "~="
+	PLUS_ASSIGN    TokenType = "+="
+	MIN_ASSIGN     TokenType = "-="
+	MUL_ASSIGN     TokenType = "*="
+	DIV_ASSIGN     TokenType = "/="
+	MOD_ASSIGN     TokenType = "%="
+	BIT_AND_ASSIGN TokenType = "&="
+	BIT_OR_ASSIGN  TokenType = "|="
+	BIT_XOR_ASSIGN TokenType = "^="
+	LSHIFT_ASSIGN  TokenType = "<<="
+	RSHIFT_ASSIGN  TokenType = ">>="
 
 	PLUS     TokenType = "+"
 	MINUS    TokenType = "-"
@@ -61,9 +66,10 @@ const (
 	GT     TokenType = ">"
 	GTE    TokenType = ">="
 
-	ARROW TokenType = "->"
-	RANGE TokenType = "..."
-	DOT   TokenType = "."
+	ARROW    TokenType = "->"
+	RANGE    TokenType = "..."
+	DOT      TokenType = "."
+	BACKTICK TokenType = "`"
 
 	COMMA     TokenType = ","
 	COLON     TokenType = ":"
@@ -81,7 +87,7 @@ const (
 	IMPL   TokenType = "IMPL"
 	FNC    TokenType = "FNC"
 	RET    TokenType = "RET"
-	YLD    TokenType = "YLD"
+	DEFER  TokenType = "DEFER"
 	BRK    TokenType = "BRK"
 	IF     TokenType = "IF"
 	ELIF   TokenType = "ELIF"
@@ -100,7 +106,7 @@ var keywords = map[string]TokenType{
 	"impl":   IMPL,
 	"fnc":    FNC,
 	"ret":    RET,
-	"yld":    YLD,
+	"defer":  DEFER,
 	"brk":    BRK,
 	"if":     IF,
 	"elif":   ELIF,

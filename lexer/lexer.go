@@ -49,18 +49,15 @@ func (l *Lexer) NextToken() Token {
 
 	l.skipWhitespace()
 
-	// Skip comments (and re-evaluate whitespace after)
 	for l.ch == '/' && l.peekChar() == '/' {
 		l.skipComment()
 		l.skipWhitespace()
 	}
 
-	// Capture exact starting location
 	startLine := l.line
 	startCol := l.column
 	startOffset := l.position
 
-	// Helper to instantly map operators with their exact byte spans
 	makeToken := func(t TokenType, literal string, length int) Token {
 		return Token{
 			Type:    t,
@@ -108,8 +105,14 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 			tok = makeToken(LTE, "<=", 2)
 		} else if l.peekChar() == '<' {
-			l.readChar()
-			tok = makeToken(LSHIFT, "<<", 2)
+			if l.peekCharN(2) == '=' {
+				l.readChar()
+				l.readChar()
+				tok = makeToken(LSHIFT_ASSIGN, "<<=", 3)
+			} else {
+				l.readChar()
+				tok = makeToken(LSHIFT, "<<", 2)
+			}
 		} else {
 			tok = makeToken(LT, string(l.ch), 1)
 		}
@@ -118,8 +121,14 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 			tok = makeToken(GTE, ">=", 2)
 		} else if l.peekChar() == '>' {
-			l.readChar()
-			tok = makeToken(RSHIFT, ">>", 2)
+			if l.peekCharN(2) == '=' {
+				l.readChar()
+				l.readChar()
+				tok = makeToken(RSHIFT_ASSIGN, ">>=", 3)
+			} else {
+				l.readChar()
+				tok = makeToken(RSHIFT, ">>", 2)
+			}
 		} else {
 			tok = makeToken(GT, string(l.ch), 1)
 		}
@@ -134,6 +143,9 @@ func (l *Lexer) NextToken() Token {
 		if l.peekChar() == '&' {
 			l.readChar()
 			tok = makeToken(AND, "&&", 2)
+		} else if l.peekChar() == '=' {
+			l.readChar()
+			tok = makeToken(BIT_AND_ASSIGN, "&=", 2)
 		} else {
 			tok = makeToken(AMPERS, string(l.ch), 1)
 		}
@@ -141,8 +153,18 @@ func (l *Lexer) NextToken() Token {
 		if l.peekChar() == '|' {
 			l.readChar()
 			tok = makeToken(OR, "||", 2)
+		} else if l.peekChar() == '=' {
+			l.readChar()
+			tok = makeToken(BIT_OR_ASSIGN, "|=", 2)
 		} else {
 			tok = makeToken(PIPE, string(l.ch), 1)
+		}
+	case '^':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = makeToken(BIT_XOR_ASSIGN, "^=", 2)
+		} else {
+			tok = makeToken(CARET, string(l.ch), 1)
 		}
 	case '.':
 		if l.peekChar() == '.' && l.peekCharN(2) == '.' {
@@ -180,14 +202,14 @@ func (l *Lexer) NextToken() Token {
 		} else {
 			tok = makeToken(MOD, string(l.ch), 1)
 		}
-	case '^':
-		tok = makeToken(CARET, string(l.ch), 1)
 	case '?':
 		tok = makeToken(QUESTION, string(l.ch), 1)
 	case ';':
 		tok = makeToken(SEMICOLON, string(l.ch), 1)
 	case ',':
 		tok = makeToken(COMMA, string(l.ch), 1)
+	case '`':
+		tok = makeToken(BACKTICK, string(l.ch), 1)
 	case '(':
 		tok = makeToken(LPAREN, string(l.ch), 1)
 	case ')':
@@ -202,7 +224,6 @@ func (l *Lexer) NextToken() Token {
 		tok = makeToken(RBRACKET, string(l.ch), 1)
 	case '"':
 		literal := l.readString()
-		// l.position is naturally at the exclusive end offset now
 		return Token{Type: STRING, Literal: literal, Line: startLine, Column: startCol, Span: Span{Start: startOffset, End: l.position}}
 	case '\'':
 		literal := l.readCharLiteral()
@@ -222,7 +243,6 @@ func (l *Lexer) NextToken() Token {
 		}
 	}
 
-	// Advance past the final character of fixed-length tokens
 	l.readChar()
 	return tok
 }
@@ -231,7 +251,7 @@ func (l *Lexer) skipWhitespace() {
 	for l.ch == ' ' || l.ch == '\t' || l.ch == '\n' || l.ch == '\r' {
 		if l.ch == '\n' {
 			l.line++
-			l.column = 0 // Reset column on new line
+			l.column = 0
 		}
 		l.readChar()
 	}
@@ -242,8 +262,6 @@ func (l *Lexer) skipComment() {
 		l.readChar()
 	}
 }
-
-// --- Reading Helpers ---
 
 func (l *Lexer) readIdentifier() string {
 	startPos := l.position
@@ -260,24 +278,21 @@ func (l *Lexer) readNumber() (TokenType, string) {
 	if l.ch == '0' {
 		peek := l.peekChar()
 		switch peek {
-		case 'x':
-		case 'X':
+		case 'x', 'X':
 			l.readChar()
 			l.readChar()
 			for isHexDigit(l.ch) {
 				l.readChar()
 			}
 			return tokType, l.input[startPos:l.position]
-		case 'o':
-		case 'O':
+		case 'o', 'O':
 			l.readChar()
 			l.readChar()
 			for isOctalDigit(l.ch) {
 				l.readChar()
 			}
 			return tokType, l.input[startPos:l.position]
-		case 'b':
-		case 'B':
+		case 'b', 'B':
 			l.readChar()
 			l.readChar()
 			for isBinaryDigit(l.ch) {
@@ -291,7 +306,6 @@ func (l *Lexer) readNumber() (TokenType, string) {
 		l.readChar()
 	}
 
-	// Peek digit ensures we don't accidentally consume methods (1.to_string()) or ranges (1...10)
 	if l.ch == '.' && isDigit(l.peekChar()) {
 		tokType = FLOAT
 		l.readChar()
@@ -305,47 +319,40 @@ func (l *Lexer) readNumber() (TokenType, string) {
 
 func (l *Lexer) readString() string {
 	startPos := l.position
-	l.readChar() // consume initial quote
+	l.readChar()
 	for l.ch != '"' && l.ch != 0 {
 		if l.ch == '\\' {
-			l.readChar() // Skip escape character
+			l.readChar()
 		}
 		l.readChar()
 	}
-	l.readChar() // consume closing quote
+	l.readChar()
 	return l.input[startPos:l.position]
 }
 
 func (l *Lexer) readCharLiteral() string {
 	startPos := l.position
-	l.readChar() // consume initial quote
+	l.readChar()
 	for l.ch != '\'' && l.ch != 0 {
 		if l.ch == '\\' {
 			l.readChar()
 		}
 		l.readChar()
 	}
-	l.readChar() // consume closing quote
+	l.readChar()
 	return l.input[startPos:l.position]
-
-} // --- Validation Helpers ---
+}
 
 func isLetter(ch byte) bool {
 	return 'a' <= ch && ch <= 'z' || 'A' <= ch && ch <= 'Z' || ch == '_'
 }
 
-func isDigit(ch byte) bool {
-	return '0' <= ch && ch <= '9'
-}
+func isDigit(ch byte) bool { return '0' <= ch && ch <= '9' }
 
 func isHexDigit(ch byte) bool {
 	return isDigit(ch) || ('a' <= ch && ch <= 'f') || ('A' <= ch && ch <= 'F')
 }
 
-func isOctalDigit(ch byte) bool {
-	return '0' <= ch && ch <= '7'
-}
+func isOctalDigit(ch byte) bool { return '0' <= ch && ch <= '7' }
 
-func isBinaryDigit(ch byte) bool {
-	return ch == '0' || ch == '1'
-}
+func isBinaryDigit(ch byte) bool { return ch == '0' || ch == '1' }
