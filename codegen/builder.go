@@ -20,13 +20,15 @@ type Builder struct {
 	Globals         map[string]string
 	StringConstants []string
 	LoopContexts    []LoopContext
+	DeferStack      [][]ast.Stmt
 }
 
 type LoopContext struct {
-	ExitLbl   string
-	ResultPtr string
-	LLVMType  string
-	LabelName string
+	ExitLbl    string
+	ResultPtr  string
+	LLVMType   string
+	LabelName  string
+	DeferDepth int
 }
 
 func NewBuilder(pool *sema.TypePool) *Builder {

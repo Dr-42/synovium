@@ -10,30 +10,20 @@ import (
 )
 
 func (b *Builder) emitBlock(block *ast.Block) string {
+	// 1. Push a new defer layer for this block
+	b.DeferStack = append(b.DeferStack, []ast.Stmt{})
+	currentDepth := len(b.DeferStack) - 1
+
 	var lastVal string
 	for _, stmt := range block.Statements {
 		switch n := stmt.(type) {
-		case *ast.VariableDecl:
-			varName := n.Name.Value
-			llvmType := b.GetLLVMType(b.Pool.NodeTypes[n.Type])
+		case *ast.DeferStmt:
+			// Prepend to the current scope's list (Defers run in LIFO order)
+			b.DeferStack[currentDepth] = append([]ast.Stmt{n.Body}, b.DeferStack[currentDepth]...)
 
-			// THE FIX: Make the LLVM register name universally unique!
-			uniqueID := b.nextRegID
-			b.nextRegID++
-			reg := fmt.Sprintf("%%%s_%d", varName, uniqueID)
-
-			b.EmitLine("  %s = alloca %s", reg, llvmType)
-
-			valReg := b.emitExpression(n.Value)
-			b.EmitLine("  store %s %s, %s* %s", llvmType, valReg, llvmType, reg)
-
-			b.Locals[varName] = reg
-
-		case *ast.ExprStmt:
-			lastVal = b.emitExpression(n.Value)
-
-			// --- NEW: Hard Return Statements ---
 		case *ast.ReturnStmt:
+			// 2. Unroll ALL defers in the entire function before returning
+			b.emitDeferUnroll(0)
 			if n.Value != nil {
 				valReg := b.emitExpression(n.Value)
 				llvmType := b.GetLLVMType(b.Pool.NodeTypes[n.Value])
@@ -41,11 +31,11 @@ func (b *Builder) emitBlock(block *ast.Block) string {
 			} else {
 				b.EmitLine("  ret void")
 			}
-			return "<terminated>" // <-- THE FIX
+			b.DeferStack = b.DeferStack[:currentDepth] // Pop layer
+			return "<terminated>"
+
 		case *ast.BreakStmt:
 			targetIdx := len(b.LoopContexts) - 1
-
-			// If it's a labeled break (`brk \`search`), scan up the stack to find the target loop!
 			if n.Label != nil {
 				for i := len(b.LoopContexts) - 1; i >= 0; i-- {
 					if b.LoopContexts[i].LabelName == n.Label.Value {
@@ -57,21 +47,40 @@ func (b *Builder) emitBlock(block *ast.Block) string {
 
 			if targetIdx >= 0 {
 				ctx := b.LoopContexts[targetIdx]
-
-				// If the break is carrying a payload, evaluate it and write it to the loop's hidden stack pointer!
+				// 3. Unroll defers only for the blocks we are breaking out of
+				b.emitDeferUnroll(ctx.DeferDepth)
 				if n.Value != nil && ctx.ResultPtr != "" {
 					valReg := b.emitExpression(n.Value)
 					b.EmitLine("  store %s %s, %s* %s", ctx.LLVMType, valReg, ctx.LLVMType, ctx.ResultPtr)
 				}
 				b.EmitLine("  br label %%%s", ctx.ExitLbl)
 			}
+			b.DeferStack = b.DeferStack[:currentDepth] // Pop layer
 			return "<terminated>"
+
+		case *ast.VariableDecl:
+			// [Existing VariableDecl logic...]
+			varName := n.Name.Value
+			llvmType := b.GetLLVMType(b.Pool.NodeTypes[n.Type])
+			uniqueID := b.nextRegID
+			b.nextRegID++
+			reg := fmt.Sprintf("%%%s_%d", varName, uniqueID)
+			b.EmitLine("  %s = alloca %s", reg, llvmType)
+			valReg := b.emitExpression(n.Value)
+			b.EmitLine("  store %s %s, %s* %s", llvmType, valReg, llvmType, reg)
+			b.Locals[varName] = reg
+
+		case *ast.ExprStmt:
+			lastVal = b.emitExpression(n.Value)
 		}
 	}
 
 	if block.Value != nil {
 		lastVal = b.emitExpression(block.Value)
 	}
+
+	b.emitDeferUnroll(currentDepth)
+	b.DeferStack = b.DeferStack[:currentDepth] // Pop layer
 
 	return lastVal
 }
@@ -740,10 +749,11 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 
 		// 2. Push the loop context so internal breaks can find it
 		b.LoopContexts = append(b.LoopContexts, LoopContext{
-			ExitLbl:   exitLbl,
-			ResultPtr: resultPtr,
-			LLVMType:  llvmType,
-			LabelName: labelName,
+			ExitLbl:    exitLbl,
+			ResultPtr:  resultPtr,
+			LLVMType:   llvmType,
+			LabelName:  labelName,
+			DeferDepth: len(b.DeferStack),
 		})
 
 		var loopVar string
@@ -1105,4 +1115,29 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 	}
 
 	return ""
+}
+
+func (b *Builder) emitDeferUnroll(targetDepth int) {
+	for i := len(b.DeferStack) - 1; i >= targetDepth; i-- {
+		for _, stmt := range b.DeferStack[i] {
+			b.emitStatement(stmt)
+		}
+	}
+}
+
+func (b *Builder) emitStatement(stmt ast.Stmt) {
+	switch n := stmt.(type) {
+	case *ast.ExprStmt:
+		b.emitExpression(n.Value)
+	case *ast.VariableDecl:
+		// Note: Variables in defers are usually just function calls,
+		// but we handle full declarations for completeness.
+		llvmType := b.GetLLVMType(b.Pool.NodeTypes[n.Type])
+		reg := fmt.Sprintf("%%%s_%d", n.Name.Value, b.nextRegID)
+		b.nextRegID++
+		b.EmitLine("  %s = alloca %s", reg, llvmType)
+		valReg := b.emitExpression(n.Value)
+		b.EmitLine("  store %s %s, %s* %s", llvmType, valReg, llvmType, reg)
+		b.Locals[n.Name.Value] = reg
+	}
 }
