@@ -361,6 +361,17 @@ func (p *Parser) parseIfExpression() ast.Expr {
 func (p *Parser) parseLoopExpression() ast.Expr {
 	expr := &ast.LoopExpr{Token: p.curToken} // The 'loop' token
 
+	if p.curTokenIs(lexer.BACKTICK) {
+		if !p.expectPeek(lexer.IDENT) {
+			return nil
+		}
+		expr.Label = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+
+		if !p.expectPeek(lexer.LOOP) {
+			return nil
+		}
+	}
+
 	// Optional condition: loop (i : i32 = 0...10) { ... }
 	if p.peekTokenIs(lexer.LPAREN) {
 		p.nextToken() // move to '('

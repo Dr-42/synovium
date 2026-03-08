@@ -3,6 +3,7 @@ package sema
 import (
 	"fmt"
 	"strings"
+
 	"synovium/ast"
 )
 
@@ -217,7 +218,12 @@ func (d *DAG) extractDependencies(node ast.Node) []string {
 				return
 			}
 			visit(v.Value)
-		case *ast.YieldStmt:
+		case *ast.DeferStmt: // Replaced YieldStmt
+			if v == nil {
+				return
+			}
+			visit(v.Body)
+		case *ast.BreakStmt: // Now takes a value!
 			if v == nil {
 				return
 			}

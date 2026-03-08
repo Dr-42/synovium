@@ -77,11 +77,10 @@ fnc main() = i32 {
     printf("[1] Vector Math:\n    X=%f, Y=%f\n", sum_vec.x, sum_vec.y);
 
     // --- C. LABELED LOOPS & BITWISE ASSIGNMENT (ACT 2) ---
-    mask : i32 = 0;
+    mask : i32 ~= 0;
     
     // The entire loop block yields a value!
     found_val : i32 = `search loop (i : i32 = 0...10) {
-        
         mask |= (1 << i); // Act 2: Bitwise assignment operators
         
         loop (j : i32 = 0...5) {

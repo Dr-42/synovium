@@ -1,7 +1,6 @@
 package sema
 
 import (
-	"fmt"
 	"synovium/ast"
 )
 
@@ -70,9 +69,7 @@ func (e *Evaluator) evaluateIf(node *ast.IfExpr, scope *Scope) TypeID {
 }
 
 // evaluateLoop tracks loop depth for valid breaks and checks the bubbled yield types.
-// evaluateLoop tracks loop depth for valid breaks and checks the bubbled yield types.
 func (e *Evaluator) evaluateLoop(node *ast.LoopExpr, scope *Scope) TypeID {
-	// Create an inner scope specifically for the loop condition (e.g., `i : i32 = 0...10`)
 	loopScope := NewScope(scope)
 
 	if node.Condition != nil {
@@ -82,16 +79,25 @@ func (e *Evaluator) evaluateLoop(node *ast.LoopExpr, scope *Scope) TypeID {
 	e.LoopDepth++
 	defer func() { e.LoopDepth-- }()
 
-	prevYieldType := e.ExpectedYieldType
+	// Save the parent loop's expected break type
+	parentYield := e.ExpectedYieldType
 	e.ExpectedYieldType = 0
-	defer func() { e.ExpectedYieldType = prevYieldType }()
 
 	blockType := e.evaluateBlock(node.Body, loopScope)
 
+	// ACT 2 FIX: A broken loop evaluates directly to the bubbled value's type!
 	if e.ExpectedYieldType != 0 {
-		// THE FIX: Dynamically forge a Slice [T; :] of the yielded type!
-		return e.getOrCreateArrayType(e.ExpectedYieldType, 0, true)
+		blockType = e.ExpectedYieldType
 	}
+
+	// NESTED BUBBLING: If this is an unnamed inner loop, it assumes a labeled break
+	// is passing THROUGH it to an outer loop. We propagate the type up the chain!
+	if node.Label == nil && e.ExpectedYieldType != 0 {
+		parentYield = e.ExpectedYieldType
+	}
+
+	// Restore context
+	e.ExpectedYieldType = parentYield
 
 	return blockType
 }
@@ -104,26 +110,30 @@ func (e *Evaluator) evaluateExprStmt(node *ast.ExprStmt, scope *Scope) TypeID {
 	return 0
 }
 
-func (e *Evaluator) evaluateBreak(node *ast.BreakStmt) TypeID {
+// --- UPGRADED: Break Value Bubbling ---
+func (e *Evaluator) evaluateBreak(node *ast.BreakStmt, scope *Scope) TypeID {
 	if e.LoopDepth == 0 {
 		return e.error(node.Span(), "illegal 'brk' statement outside of a loop")
 	}
+
+	if node.Value != nil {
+		brkType := e.Evaluate(node.Value, scope)
+
+		if e.ExpectedYieldType == 0 {
+			e.ExpectedYieldType = brkType // Lock in the break type for this loop chain
+		} else if e.ExpectedYieldType != brkType {
+			return e.error(node.Span(), "break value type does not match previously broken type in loop")
+		}
+	}
+
 	return 0
 }
 
-func (e *Evaluator) evaluateYield(node *ast.YieldStmt, scope *Scope) TypeID {
-	if e.LoopDepth == 0 {
-		return e.error(node.Span(), "illegal 'yld' statement outside of a loop")
-	}
-
-	yldType := e.Evaluate(node.Value, scope)
-
-	if e.ExpectedYieldType == 0 {
-		e.ExpectedYieldType = yldType // First yield locks in the type
-	} else if e.ExpectedYieldType != yldType {
-		return e.error(node.Span(), fmt.Sprintf("yielded type does not match previously yielded type in loop"))
-	}
-
+// --- NEW: Defer Evaluation (Replaces evaluateYield) ---
+func (e *Evaluator) evaluateDefer(node *ast.DeferStmt, scope *Scope) TypeID {
+	// A defer statement does not yield a value to the current block.
+	// We simply evaluate its body to ensure it is structurally and mathematically sound.
+	e.Evaluate(node.Body, scope)
 	return 0
 }
 

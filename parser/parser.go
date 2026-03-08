@@ -30,38 +30,43 @@ const (
 )
 
 var precedences = map[lexer.TokenType]int{
-	lexer.ASSIGN:      ASSIGN,
-	lexer.MUT_ASSIGN:  ASSIGN,
-	lexer.DECL_ASSIGN: ASSIGN,
-	lexer.PLUS_ASSIGN: ASSIGN,
-	lexer.MIN_ASSIGN:  ASSIGN,
-	lexer.MUL_ASSIGN:  ASSIGN,
-	lexer.DIV_ASSIGN:  ASSIGN,
-	lexer.MOD_ASSIGN:  ASSIGN,
-	lexer.RANGE:       RANGE,
-	lexer.OR:          LOGICAL_OR,
-	lexer.AND:         LOGICAL_AND,
-	lexer.PIPE:        BITWISE_OR,
-	lexer.CARET:       BITWISE_XOR,
-	lexer.AMPERS:      BITWISE_AND,
-	lexer.EQ:          EQUALITY,
-	lexer.NOT_EQ:      EQUALITY,
-	lexer.LT:          RELATIONAL,
-	lexer.LTE:         RELATIONAL,
-	lexer.GT:          RELATIONAL,
-	lexer.GTE:         RELATIONAL,
-	lexer.LSHIFT:      SHIFT,
-	lexer.RSHIFT:      SHIFT,
-	lexer.PLUS:        ADDITIVE,
-	lexer.MINUS:       ADDITIVE,
-	lexer.ASTERISK:    MULTIPLICATIVE,
-	lexer.SLASH:       MULTIPLICATIVE,
-	lexer.MOD:         MULTIPLICATIVE,
-	lexer.AS:          CAST,
-	lexer.LPAREN:      POSTFIX, // Function calls
-	lexer.LBRACKET:    POSTFIX, // Array indexing
-	lexer.DOT:         POSTFIX, // Field access
-	lexer.QUESTION:    POSTFIX, // Bubbling operator
+	lexer.ASSIGN:         ASSIGN,
+	lexer.MUT_ASSIGN:     ASSIGN,
+	lexer.DECL_ASSIGN:    ASSIGN,
+	lexer.PLUS_ASSIGN:    ASSIGN,
+	lexer.MIN_ASSIGN:     ASSIGN,
+	lexer.MUL_ASSIGN:     ASSIGN,
+	lexer.DIV_ASSIGN:     ASSIGN,
+	lexer.MOD_ASSIGN:     ASSIGN,
+	lexer.BIT_AND_ASSIGN: ASSIGN,
+	lexer.BIT_OR_ASSIGN:  ASSIGN,
+	lexer.BIT_XOR_ASSIGN: ASSIGN,
+	lexer.LSHIFT_ASSIGN:  ASSIGN,
+	lexer.RSHIFT_ASSIGN:  ASSIGN,
+	lexer.RANGE:          RANGE,
+	lexer.OR:             LOGICAL_OR,
+	lexer.AND:            LOGICAL_AND,
+	lexer.PIPE:           BITWISE_OR,
+	lexer.CARET:          BITWISE_XOR,
+	lexer.AMPERS:         BITWISE_AND,
+	lexer.EQ:             EQUALITY,
+	lexer.NOT_EQ:         EQUALITY,
+	lexer.LT:             RELATIONAL,
+	lexer.LTE:            RELATIONAL,
+	lexer.GT:             RELATIONAL,
+	lexer.GTE:            RELATIONAL,
+	lexer.LSHIFT:         SHIFT,
+	lexer.RSHIFT:         SHIFT,
+	lexer.PLUS:           ADDITIVE,
+	lexer.MINUS:          ADDITIVE,
+	lexer.ASTERISK:       MULTIPLICATIVE,
+	lexer.SLASH:          MULTIPLICATIVE,
+	lexer.MOD:            MULTIPLICATIVE,
+	lexer.AS:             CAST,
+	lexer.LPAREN:         POSTFIX, // Function calls
+	lexer.LBRACKET:       POSTFIX, // Array indexing
+	lexer.DOT:            POSTFIX, // Field access
+	lexer.QUESTION:       POSTFIX, // Bubbling operator
 }
 
 type prefixParseFn func() ast.Expr
@@ -111,6 +116,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.MATCH, p.parseMatchExpression)
 	p.registerPrefix(lexer.LOOP, p.parseLoopExpression)
 	p.registerPrefix(lexer.LBRACE, p.parseBlockExpression)
+	p.registerPrefix(lexer.BACKTICK, p.parseLoopExpression)
 
 	p.registerPrefix(lexer.LBRACKET, p.parseArrayInitExpression)
 
@@ -124,6 +130,8 @@ func New(l *lexer.Lexer) *Parser {
 		lexer.AND, lexer.OR, lexer.PIPE, lexer.CARET, lexer.AMPERS,
 		lexer.LSHIFT, lexer.RSHIFT, lexer.RANGE, lexer.ASSIGN, lexer.MUT_ASSIGN,
 		lexer.PLUS_ASSIGN, lexer.MIN_ASSIGN, lexer.MUL_ASSIGN, lexer.DIV_ASSIGN, lexer.MOD_ASSIGN,
+		lexer.BIT_AND_ASSIGN, lexer.BIT_OR_ASSIGN, lexer.BIT_XOR_ASSIGN,
+		lexer.LSHIFT_ASSIGN, lexer.RSHIFT_ASSIGN,
 	}
 	for _, t := range infixes {
 		p.registerInfix(t, p.parseInfixExpression)

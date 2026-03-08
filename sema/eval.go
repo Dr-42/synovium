@@ -167,13 +167,13 @@ func (e *Evaluator) evaluateInternal(node ast.Node, scope *Scope) TypeID {
 	case *ast.LoopExpr:
 		return e.evaluateLoop(n, scope)
 
-	// --- 5. STATEMENTS ---
+		// --- 5. STATEMENTS ---
 	case *ast.ExprStmt:
 		return e.evaluateExprStmt(n, scope)
 	case *ast.BreakStmt:
-		return e.evaluateBreak(n)
-	case *ast.YieldStmt:
-		return e.evaluateYield(n, scope)
+		return e.evaluateBreak(n, scope) // Added scope!
+	case *ast.DeferStmt:
+		return e.evaluateDefer(n, scope) // Replaced YieldStmt!
 	case *ast.ReturnStmt:
 		return e.evaluateReturn(n, scope)
 
@@ -373,7 +373,10 @@ func (e *Evaluator) evaluateInfix(node *ast.InfixExpr, scope *Scope) TypeID {
 	}
 
 	// --- ASSIGNMENT & MUTABILITY CHECK ---
-	isAssignment := node.Operator == "=" || node.Operator == "~=" || node.Operator == "+=" || node.Operator == "-=" || node.Operator == "*=" || node.Operator == "/=" || node.Operator == "%="
+	isAssignment := node.Operator == "=" || node.Operator == "~=" || node.Operator == "+=" ||
+		node.Operator == "-=" || node.Operator == "*=" || node.Operator == "/=" || node.Operator == "%=" ||
+		node.Operator == "&=" || node.Operator == "|=" || node.Operator == "^=" ||
+		node.Operator == "<<=" || node.Operator == ">>="
 	if isAssignment {
 		switch leftNode := node.Left.(type) {
 		case *ast.Identifier:

@@ -14,8 +14,8 @@ func (p *Parser) parseStatement() ast.Stmt {
 		return p.parseExpressionStatement()
 	case lexer.RET:
 		return p.parseReturnStatement()
-	case lexer.YLD:
-		return p.parseYieldStatement()
+	case lexer.DEFER: // Replaced YLD
+		return p.parseDeferStatement()
 	case lexer.BRK:
 		return p.parseBreakStatement()
 	default:
@@ -55,21 +55,40 @@ func (p *Parser) parseReturnStatement() ast.Stmt {
 	return stmt
 }
 
-func (p *Parser) parseYieldStatement() ast.Stmt {
-	stmt := &ast.YieldStmt{Token: p.curToken}
-	p.nextToken()
+func (p *Parser) parseDeferStatement() ast.Stmt {
+	stmt := &ast.DeferStmt{Token: p.curToken}
+	p.nextToken() // move past 'defer'
 
-	if !p.curTokenIs(lexer.SEMICOLON) {
-		stmt.Value = p.parseExpression(LOWEST)
-	}
-	if p.peekTokenIs(lexer.SEMICOLON) {
-		p.nextToken()
+	// A defer can encapsulate an entire block, or a single statement
+	if p.curTokenIs(lexer.LBRACE) {
+		stmt.Body = &ast.ExprStmt{
+			Token: p.curToken,
+			Value: p.parseBlockExpression(),
+		}
+	} else {
+		stmt.Body = p.parseStatement()
 	}
 	return stmt
 }
 
+// --- UPGRADED: Parse Break Statements ---
 func (p *Parser) parseBreakStatement() ast.Stmt {
 	stmt := &ast.BreakStmt{Token: p.curToken}
+
+	// 1. Optional target label: brk `outer
+	if p.peekTokenIs(lexer.BACKTICK) {
+		p.nextToken() // move to '`'
+		if p.expectPeek(lexer.IDENT) {
+			stmt.Label = &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		}
+	}
+
+	// 2. Optional bubbled value: brk 42;
+	if !p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+		stmt.Value = p.parseExpression(LOWEST)
+	}
+
 	if p.peekTokenIs(lexer.SEMICOLON) {
 		p.nextToken()
 	}
