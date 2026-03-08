@@ -65,6 +65,9 @@ func (b *Builder) emitLValue(node ast.Expr) (string, string) {
 		if reg, exists := b.Locals[n.Value]; exists {
 			return reg, b.GetLLVMType(b.Pool.NodeTypes[n])
 		}
+		if reg, exists := b.Globals[n.Value]; exists {
+			return reg, b.GetLLVMType(b.Pool.NodeTypes[n])
+		}
 		// Never return empty strings! Force a visible LLVM error!
 		return "MISSING_LOCAL_" + n.Value, b.GetLLVMType(b.Pool.NodeTypes[n])
 
@@ -150,8 +153,7 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		return reg
 
 	case *ast.Identifier:
-		ptrReg := b.Locals[n.Value]
-		llvmType := b.GetLLVMType(b.Pool.NodeTypes[n])
+		ptrReg, llvmType := b.emitLValue(n)
 		reg := b.NextReg()
 		b.EmitLine("  %s = load %s, %s* %s", reg, llvmType, llvmType, ptrReg)
 		return reg
@@ -535,8 +537,37 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 				}
 			}
 
-			valReg := b.emitExpression(arg)
-			argLLVM := b.GetLLVMType(b.Pool.NodeTypes[arg])
+			argTypeID := b.Pool.NodeTypes[arg]
+			argType := b.Pool.Types[argTypeID]
+			argLLVM := b.GetLLVMType(argTypeID)
+
+			isArray := (argType.Mask & sema.MaskIsArray) != 0
+			isVariadicArg := paramIndex >= len(funcType.FuncParams)
+
+			expectedIsPtr := false
+			if !isVariadicArg {
+				expectedTypeID := funcType.FuncParams[paramIndex]
+				expectedIsPtr = (b.Pool.Types[expectedTypeID].Mask&sema.MaskIsPointer) != 0 || b.Pool.Types[expectedTypeID].Name == "str"
+			}
+
+			var valReg string
+
+			// --- SMART ARRAY-TO-POINTER DECAY ---
+			if isArray && (isVariadicArg || expectedIsPtr) {
+				ptrReg, _ := b.emitLValue(arg)
+				decayReg := b.NextReg()
+				elemLLVM := b.GetLLVMType(argType.BaseType)
+
+				// Step 0 into the array pointer, and Step 0 to the first element!
+				b.EmitLine("  %s = getelementptr inbounds %s, %s* %s, i32 0, i32 0", decayReg, argLLVM, argLLVM, ptrReg)
+
+				argLLVM = elemLLVM + "*"
+				valReg = decayReg
+			} else {
+				// Standard value evaluation
+				valReg = b.emitExpression(arg)
+			}
+
 			args = append(args, fmt.Sprintf("%s %s", argLLVM, valReg))
 		}
 
@@ -950,6 +981,73 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		reg := b.NextReg()
 		b.EmitLine("  %%cast_%d = bitcast [%d x i8]* %s to %s*", castID, len(n.Data), globalName, llvmType)
 		b.EmitLine("  %s = load %s, %s* %%cast_%d", reg, llvmType, llvmType, castID)
+
+		return reg
+
+	case *ast.CastExpr:
+		srcReg := b.emitExpression(n.Left)
+		srcTypeID := b.Pool.NodeTypes[n.Left]
+		dstTypeID := b.Pool.NodeTypes[n]
+
+		srcType := b.Pool.Types[srcTypeID]
+		dstType := b.Pool.Types[dstTypeID]
+
+		srcLLVM := b.GetLLVMType(srcTypeID)
+		dstLLVM := b.GetLLVMType(dstTypeID)
+
+		if srcLLVM == dstLLVM {
+			return srcReg
+		}
+
+		reg := b.NextReg()
+
+		// 1. Ptr <-> Ptr
+		if (srcType.Mask&sema.MaskIsPointer) != 0 && (dstType.Mask&sema.MaskIsPointer) != 0 {
+			b.EmitLine("  %s = bitcast %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+			return reg
+		}
+		// 2. Ptr -> Int
+		if (srcType.Mask&sema.MaskIsPointer) != 0 && (dstType.Mask&sema.MaskIsNumeric) != 0 {
+			b.EmitLine("  %s = ptrtoint %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+			return reg
+		}
+		// 3. Int -> Ptr
+		if (srcType.Mask&sema.MaskIsNumeric) != 0 && (dstType.Mask&sema.MaskIsPointer) != 0 {
+			b.EmitLine("  %s = inttoptr %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+			return reg
+		}
+
+		isSrcFloat := (srcType.Mask & sema.MaskIsFloat) != 0
+		isDstFloat := (dstType.Mask & sema.MaskIsFloat) != 0
+
+		// 4. Float <-> Float
+		if isSrcFloat && isDstFloat {
+			if srcType.TrueSizeBits > dstType.TrueSizeBits {
+				b.EmitLine("  %s = fptrunc %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+			} else {
+				b.EmitLine("  %s = fpext %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+			}
+			return reg
+		}
+
+		// 5. Int <-> Float
+		if !isSrcFloat && isDstFloat {
+			b.EmitLine("  %s = sitofp %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+			return reg
+		}
+		if isSrcFloat && !isDstFloat {
+			b.EmitLine("  %s = fptosi %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+			return reg
+		}
+
+		// 6. Int <-> Int
+		if srcType.TrueSizeBits > dstType.TrueSizeBits {
+			b.EmitLine("  %s = trunc %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+		} else if srcType.TrueSizeBits < dstType.TrueSizeBits {
+			b.EmitLine("  %s = sext %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+		} else {
+			b.EmitLine("  %s = bitcast %s %s to %s", reg, srcLLVM, srcReg, dstLLVM)
+		}
 
 		return reg
 

@@ -17,6 +17,7 @@ type Builder struct {
 	currentFunc  string
 
 	Locals          map[string]string
+	Globals         map[string]string
 	StringConstants []string
 	LoopExits       []string // <-- NEW: Tracks active loop exit blocks for `brk`
 }
@@ -27,6 +28,7 @@ func NewBuilder(pool *sema.TypePool) *Builder {
 		nextRegID:    1,
 		nextStringID: 1,
 		Locals:       make(map[string]string),
+		Globals:      make(map[string]string),
 	}
 }
 
@@ -65,6 +67,16 @@ func (b *Builder) isGenericFunction(id sema.TypeID) bool {
 func (b *Builder) Generate(program []ast.Decl) string {
 	b.emitTypeDeclarations()
 	b.EmitLine("")
+
+	// 0. Extern Global Variables
+	for _, decl := range program {
+		if vDecl, ok := decl.(*ast.VariableDecl); ok && vDecl.Value == nil {
+			typeID := b.Pool.NodeTypes[vDecl]
+			llvmType := b.GetLLVMType(typeID)
+			b.EmitLine("@%s = external global %s", vDecl.Name.Value, llvmType)
+			b.Globals[vDecl.Name.Value] = "@" + vDecl.Name.Value
+		}
+	}
 
 	// 1. Top-Level Functions & Impl Methods
 	for _, decl := range program {

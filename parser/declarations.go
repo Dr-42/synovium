@@ -57,6 +57,12 @@ func (p *Parser) parseVariableDecl() ast.Decl {
 	p.nextToken()
 	decl.Type = p.parseType()
 
+	// --- EXTERN VARIABLES ---
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+		return decl // It's an extern variable! (e.g., stderr: *FILE;)
+	}
+
 	if !p.peekTokenIs(lexer.ASSIGN) && !p.peekTokenIs(lexer.MUT_ASSIGN) && !p.peekTokenIs(lexer.DECL_ASSIGN) {
 		p.errors = append(p.errors, "expected assignment operator (=, ~=, :=) after type")
 		return nil

@@ -226,6 +226,30 @@ func (e *Evaluator) evaluateIdentifier(node *ast.Identifier, scope *Scope) TypeI
 }
 
 func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) TypeID {
+	// --- 1. EXTERN VARIABLES (e.g. stderr: *FILE;) ---
+	if node.Value == nil {
+		lhsType := e.resolveTypeSignature(node.Type, scope)
+		if lhsType == 0 {
+			return 0
+		}
+
+		// THE DAG PATCH FIX
+		if existing, exists := scope.Symbols[node.Name.Value]; exists && !existing.IsResolved {
+			existing.TypeID = lhsType
+			existing.IsMutable = false
+			existing.IsResolved = true
+		} else {
+			sym, _ := scope.Define(node.Name.Value, lhsType, false, node)
+			if sym != nil {
+				sym.IsResolved = true
+			}
+		}
+
+		e.Pool.NodeTypes[node] = lhsType
+		return lhsType
+	}
+
+	// --- 2. STANDARD VARIABLES ---
 	rhsType := e.Evaluate(node.Value, scope)
 	if rhsType == 0 {
 		return 0
@@ -239,7 +263,7 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 	isMut := node.Operator == "~="
 	var comptimeData []byte
 
-	// --- COMPTIME JIT INTERCEPTOR ---
+	// --- 3. COMPTIME JIT INTERCEPTOR ---
 	if node.Operator == ":=" {
 		if e.JITCallback == nil {
 			return e.error(node.Span(), "comptime JIT engine is not initialized")
@@ -247,7 +271,7 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 
 		data, err := e.JITCallback(node.Value, lhsType, e.Pool, scope, e.GlobalDecls)
 		if err != nil {
-			return e.error(node.Span(), err.Error()) // Pass the raw debug dump up!
+			return e.error(node.Span(), err.Error())
 		}
 		comptimeData = data
 
@@ -257,7 +281,7 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 		rhsType = lhsType
 	}
 
-	// The DAG variable patching
+	// --- 4. DAG VARIABLE PATCHING ---
 	var sym *Symbol
 	if existing, exists := scope.Symbols[node.Name.Value]; exists && !existing.IsResolved {
 		existing.TypeID = rhsType
@@ -268,8 +292,8 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 		sym, _ = scope.Define(node.Name.Value, rhsType, isMut, node)
 	}
 
-	// THE CRITICAL FIX: Lock the memory into the Environment!
-	if node.Operator == ":=" {
+	// Lock the memory into the Environment safely!
+	if node.Operator == ":=" && sym != nil {
 		sym.ComptimeData = comptimeData
 	}
 

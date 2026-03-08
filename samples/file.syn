@@ -1,24 +1,31 @@
 struct FILE {}
 
-fnc printf(fmt: str, ...);
-fnc scanf(fmt: str, ...);
-fnc fprintf(stream: *FILE, fmt: str, ...);
+fnc printf(fmt: str, ...) = i32;
+fnc scanf(fmt: str, ...) = i32;
+fnc fprintf(stream: *FILE, fmt: str, ...) = i32;
 fnc fopen(path: str, mode: str) = *FILE;
-fnc fclose(stream: *FILE);
+fnc fclose(stream: *FILE) = i32;
 fnc exit(code: i32);
 
-stderr: *FILE = 2 as *FILE;
+// Because there is no '=', the compiler now correctly maps this 
+// to `extern FILE *stderr;`!
+stderr: *FILE; 
 
 fnc main() = i32 {
     buf : [i8; 100] = [0 as i8; 100];
     printf("Enter name: ");
     scanf("%s", buf);
-    tst : *FILE = fopen("./tst.txt", "w+");
-    if (tst as u64 == 0 as u64) {
-        fprintf(stderr, "Couldn't open file");
+    tst_new : *FILE = fopen("./tst_new.txt", "w+");
+    tst_append : *FILE = fopen("./tst_append.txt", "a+");
+    
+    if ((tst_new as u64 == 0 as u64) || (tst_append as u64 == 0 as u64)) {
+        fprintf(stderr, "Couldn't open file\n");
         exit(1);
     }
-    fprintf(tst, "Hello %s\n", buf);
-    fclose(tst);
+    
+    fprintf(tst_new, "Hello %s\n", buf);
+    fprintf(tst_append, "New login: %s\n", buf);
+    fclose(tst_new);
+    fclose(tst_append);
     ret 0;
 }
