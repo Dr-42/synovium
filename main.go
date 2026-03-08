@@ -56,6 +56,26 @@ func main() {
 	evaluator.InjectBuiltins(globalScope)
 
 	dag := sema.NewDAG(globalScope)
+
+	// THE AUTO-LOADER HOOK
+	dag.ParseModule = func(moduleName string) ([]ast.Decl, error) {
+		filename := moduleName + ".syn"
+		content, err := os.ReadFile(filename)
+		if err != nil {
+			// Not a file, just silently return (it might be a standard variable or unhoisted struct)
+			return nil, nil
+		}
+
+		l := lexer.New(string(content))
+		p := parser.New(l)
+		prog := p.ParseSourceFile()
+
+		if len(p.Errors()) > 0 {
+			return nil, fmt.Errorf("parse errors in module '%s': %v", filename, p.Errors())
+		}
+		return prog.Declarations, nil
+	}
+
 	sortedDecls, err := dag.BuildAndSort(program)
 	if err != nil {
 		fmt.Printf("❌ COMPTIME DAG ERROR:\n  - %v\n", err)

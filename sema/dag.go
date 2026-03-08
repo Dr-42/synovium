@@ -16,41 +16,60 @@ type GraphNode struct {
 	InDegree      int      // Number of unresolved prerequisites
 }
 
-// DAG manages comptime dependency resolution and cycle detection.
+// DAG manages comptime dependency resolution, cycle detection, and auto-loading.
 type DAG struct {
-	Nodes       map[string]*GraphNode
-	GlobalScope *Scope
+	Nodes         map[string]*GraphNode
+	GlobalScope   *Scope
+	ParseModule   func(moduleName string) ([]ast.Decl, error) // The Auto-Loader Hook!
+	LoadedModules map[string]bool
+	ImplCounter   int // Tracks multiple impl blocks for the same struct
 }
 
 func NewDAG(globalScope *Scope) *DAG {
 	return &DAG{
-		Nodes:       make(map[string]*GraphNode),
-		GlobalScope: globalScope,
+		Nodes:         make(map[string]*GraphNode),
+		GlobalScope:   globalScope,
+		LoadedModules: make(map[string]bool),
 	}
 }
 
-// BuildAndSort hoists declarations, builds the graph, checks for cycles,
-// and returns the topologically sorted execution order.
+// BuildAndSort hoists declarations, builds the graph, auto-loads files, and prunes dead code.
 func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
-	// 1. Pass 1: Hoist declarations and initialize nodes
-	for _, decl := range program.Declarations {
+	// 1. Pass 1: Module Auto-Loading & Hoisting
+	// We use a dynamically growing queue so imported files can inject new declarations!
+	declQueue := append([]ast.Decl{}, program.Declarations...)
+
+	for i := 0; i < len(declQueue); i++ {
+		decl := declQueue[i]
 		name := d.extractName(decl)
-		if name == "" {
-			continue // Unnamed or illegal decls (caught by parser)
+
+		if name != "" && d.Nodes[name] == nil {
+			d.GlobalScope.DefineDeferred(name, decl)
+			d.Nodes[name] = &GraphNode{
+				Name:          name,
+				Decl:          decl,
+				Prerequisites: []string{},
+				Dependents:    []string{},
+				InDegree:      0,
+			}
 		}
 
-		// Register in global scope as a Deferred symbol so scopes can find it
-		_, err := d.GlobalScope.DefineDeferred(name, decl)
-		if err != nil {
-			return nil, err
-		}
-
-		d.Nodes[name] = &GraphNode{
-			Name:          name,
-			Decl:          decl,
-			Prerequisites: []string{},
-			Dependents:    []string{},
-			InDegree:      0,
+		// THE AUTO-LOADER: Check dependencies and load files if unresolved
+		deps := d.extractDependencies(decl)
+		for _, req := range deps {
+			if !d.LoadedModules[req] {
+				d.LoadedModules[req] = true // Mark as attempted
+				if d.ParseModule != nil {
+					newDecls, err := d.ParseModule(req)
+					if err != nil {
+						return nil, err
+					}
+					if len(newDecls) > 0 {
+						// Inject the newly parsed file directly into the current DAG queue!
+						declQueue = append(declQueue, newDecls...)
+					}
+				}
+			}
 		}
 	}
 
@@ -60,11 +79,9 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 
 		uniquePrereqs := make(map[string]bool)
 		for _, req := range deps {
-			// Ignore self-recursion; a function calling itself is not a strict comptime cycle
 			if req == name {
 				continue
 			}
-			// Only track dependencies that map to other top-level global nodes
 			if _, exists := d.Nodes[req]; exists {
 				uniquePrereqs[req] = true
 			}
@@ -77,11 +94,10 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 		}
 	}
 
-	// 3. Kahn's Algorithm for Topological Sort & Cycle Detection
-	var sorted []ast.Decl
+	// 3. Kahn's Algorithm for Topological Sort
+	var sorted []*GraphNode // <-- Sort the Nodes, not the raw Decls!
 	var queue []*GraphNode
 
-	// Enqueue all axioms (nodes with no prerequisites)
 	for _, node := range d.Nodes {
 		if node.InDegree == 0 {
 			queue = append(queue, node)
@@ -89,13 +105,10 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 	}
 
 	for len(queue) > 0 {
-		// Pop the next available node
 		curr := queue[0]
 		queue = queue[1:]
+		sorted = append(sorted, curr) // <-- THE FIX
 
-		sorted = append(sorted, curr.Decl)
-
-		// Resolve this prerequisite for all dependents
 		for _, depName := range curr.Dependents {
 			depNode := d.Nodes[depName]
 			depNode.InDegree--
@@ -105,12 +118,67 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 		}
 	}
 
-	// 4. Cycle Detection Check
 	if len(sorted) != len(d.Nodes) {
 		return nil, fmt.Errorf("cyclic comptime dependency detected involving: %s", d.findCycleNodes())
 	}
 
-	return sorted, nil
+	// 4. Pass 3: AUTOPRUNING (Dead Code Elimination)
+	keep := make(map[string]bool)
+	var reachQueue []string
+
+	// Find the Roots
+	for name, node := range d.Nodes {
+		isRoot := false
+		if name == "main" {
+			isRoot = true
+		} else if fn, ok := node.Decl.(*ast.FunctionDecl); ok && fn.Body == nil {
+			isRoot = true // Never prune C FFI headers!
+		}
+
+		if isRoot {
+			keep[name] = true
+			reachQueue = append(reachQueue, name)
+		}
+	}
+
+	// Backwards Breadth-First Search
+	for len(reachQueue) > 0 {
+		curr := reachQueue[0]
+		reachQueue = reachQueue[1:]
+
+		node := d.Nodes[curr]
+		if node == nil {
+			continue
+		}
+
+		// Keep all prerequisites required by this node
+		for _, req := range node.Prerequisites {
+			if !keep[req] {
+				keep[req] = true
+				reachQueue = append(reachQueue, req)
+			}
+		}
+
+		// If we keep a struct, we MUST automatically keep all of its impl blocks!
+		implPrefix := curr + "_impl_"
+		for nName := range d.Nodes {
+			if strings.HasPrefix(nName, implPrefix) && !keep[nName] {
+				keep[nName] = true
+				reachQueue = append(reachQueue, nName)
+			}
+		}
+	}
+
+	// Filter the final AST payload
+	var pruned []ast.Decl
+	for _, node := range sorted {
+		// THE FIX: We use the pre-calculated node.Name directly!
+		if keep[node.Name] {
+			pruned = append(pruned, node.Decl)
+		}
+	}
+
+	return pruned, nil
 }
 
 // extractName grabs the string identifier of a top-level declaration.
@@ -127,9 +195,9 @@ func (d *DAG) extractName(decl ast.Decl) string {
 	case *ast.EnumDecl:
 		return v.Name.Value
 	case *ast.ImplDecl:
-		// Impl blocks don't create new names, they attach to existing structs
-		// For ordering, we attach them via the Target name
-		return v.Target.Value + "_impl"
+		// Generate a unique ID so multiple impl blocks for the same struct don't overwrite each other!
+		d.ImplCounter++
+		return fmt.Sprintf("%s_impl_%d", v.Target.Value, d.ImplCounter)
 	}
 	return ""
 }
@@ -307,6 +375,38 @@ func (d *DAG) extractDependencies(node ast.Node) []string {
 				visit(param)
 			}
 			visit(v.ReturnType)
+		case *ast.BubbleExpr:
+			if v == nil {
+				return
+			}
+			visit(v.Left)
+		case *ast.CastExpr:
+			if v == nil {
+				return
+			}
+			visit(v.Left)
+			visit(v.Type)
+		case *ast.IndexExpr:
+			if v == nil {
+				return
+			}
+			visit(v.Left)
+			visit(v.Index)
+		case *ast.FieldAccessExpr:
+			if v == nil {
+				return
+			}
+			visit(v.Left)
+		case *ast.ArrayInitExpr:
+			if v == nil {
+				return
+			}
+			for _, el := range v.Elements {
+				visit(el)
+			}
+			if v.Count != nil {
+				visit(v.Count)
+			}
 		}
 	}
 
