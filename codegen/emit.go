@@ -230,7 +230,11 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		// --- 1. OPERATOR OVERLOADING HOOK ---
 		leftTypeID := b.Pool.NodeTypes[n.Left]
 		leftType := b.Pool.Types[leftTypeID]
-		isAssign := n.Operator == "=" || n.Operator == "~=" || n.Operator == "+=" || n.Operator == "-="
+		isAssign := n.Operator == "=" || n.Operator == "~=" || n.Operator == ":=" ||
+			n.Operator == "+=" || n.Operator == "-=" || n.Operator == "*=" ||
+			n.Operator == "/=" || n.Operator == "%=" || n.Operator == "&=" ||
+			n.Operator == "|=" || n.Operator == "^=" || n.Operator == "<<=" ||
+			n.Operator == ">>="
 
 		if !leftType.IsFundamental && !isAssign {
 			actualLeft := leftType
@@ -293,26 +297,61 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			rightReg := b.emitExpression(n.Right)
 
 			valReg := rightReg
-			if n.Operator != "=" {
+
+			// If it's a compound assignment (e.g., +=, *=, <<=), we must load and calculate first
+			if n.Operator != "=" && n.Operator != "~=" && n.Operator != ":=" {
 				currReg := b.NextReg()
 				b.EmitLine("  %s = load %s, %s* %s", currReg, llvmType, llvmType, ptrReg)
 				valReg = b.NextReg()
+
 				isFloat := strings.Contains(llvmType, "double") || strings.Contains(llvmType, "float")
-				op := n.Operator[:len(n.Operator)-1]
-				if op == "+" {
+				op := n.Operator[:len(n.Operator)-1] // Extract the base math operator (e.g., "*=" -> "*")
+
+				switch op {
+				case "+":
 					if isFloat {
 						b.EmitLine("  %s = fadd %s %s, %s", valReg, llvmType, currReg, rightReg)
 					} else {
 						b.EmitLine("  %s = add %s %s, %s", valReg, llvmType, currReg, rightReg)
 					}
-				} else if op == "-" {
+				case "-":
 					if isFloat {
 						b.EmitLine("  %s = fsub %s %s, %s", valReg, llvmType, currReg, rightReg)
 					} else {
 						b.EmitLine("  %s = sub %s %s, %s", valReg, llvmType, currReg, rightReg)
 					}
+				case "*":
+					if isFloat {
+						b.EmitLine("  %s = fmul %s %s, %s", valReg, llvmType, currReg, rightReg)
+					} else {
+						b.EmitLine("  %s = mul %s %s, %s", valReg, llvmType, currReg, rightReg)
+					}
+				case "/":
+					if isFloat {
+						b.EmitLine("  %s = fdiv %s %s, %s", valReg, llvmType, currReg, rightReg)
+					} else {
+						b.EmitLine("  %s = sdiv %s %s, %s", valReg, llvmType, currReg, rightReg)
+					}
+				case "%":
+					if isFloat {
+						b.EmitLine("  %s = frem %s %s, %s", valReg, llvmType, currReg, rightReg)
+					} else {
+						b.EmitLine("  %s = srem %s %s, %s", valReg, llvmType, currReg, rightReg)
+					}
+				case "&":
+					b.EmitLine("  %s = and %s %s, %s", valReg, llvmType, currReg, rightReg)
+				case "|":
+					b.EmitLine("  %s = or %s %s, %s", valReg, llvmType, currReg, rightReg)
+				case "^":
+					b.EmitLine("  %s = xor %s %s, %s", valReg, llvmType, currReg, rightReg)
+				case "<<":
+					b.EmitLine("  %s = shl %s %s, %s", valReg, llvmType, currReg, rightReg)
+				case ">>":
+					b.EmitLine("  %s = ashr %s %s, %s", valReg, llvmType, currReg, rightReg)
 				}
 			}
+
+			// Store the mathematically updated value back into memory
 			b.EmitLine("  store %s %s, %s* %s", llvmType, valReg, llvmType, ptrReg)
 			return ""
 		}

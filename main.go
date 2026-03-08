@@ -55,14 +55,19 @@ func main() {
 	evaluator.JITCallback = codegen.RunJIT
 	evaluator.InjectBuiltins(globalScope)
 
+	parsedFiles := make(map[string]bool)
+	parsedFiles[filename] = true
+
 	dag := sema.NewDAG(globalScope)
 
-	// THE AUTO-LOADER HOOK
+	// --- THE AUTO-LOADER HOOK ---
 	dag.ParseModule = func(moduleName string) ([]ast.Decl, error) {
+		// When the DAG sees "std.math", it looks for "std.syn"
 		filename := moduleName + ".syn"
 		content, err := os.ReadFile(filename)
 		if err != nil {
-			// Not a file, just silently return (it might be a standard variable or unhoisted struct)
+			// If the file doesn't exist, it's just a regular unresolved identifier.
+			// Return silently and let the Semantic Evaluator throw the error later!
 			return nil, nil
 		}
 
@@ -75,6 +80,7 @@ func main() {
 		}
 		return prog.Declarations, nil
 	}
+	// ----------------------------
 
 	sortedDecls, err := dag.BuildAndSort(program)
 	if err != nil {

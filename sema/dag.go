@@ -85,6 +85,16 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 			if _, exists := d.Nodes[req]; exists {
 				uniquePrereqs[req] = true
 			}
+
+			// THE FIX: Only depend on a struct's impl blocks if WE are not an impl block!
+			implPrefix := req + "_impl_"
+			if !strings.HasPrefix(name, implPrefix) {
+				for nName := range d.Nodes {
+					if strings.HasPrefix(nName, implPrefix) {
+						uniquePrereqs[nName] = true
+					}
+				}
+			}
 		}
 
 		for req := range uniquePrereqs {
@@ -95,7 +105,7 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 	}
 
 	// 3. Kahn's Algorithm for Topological Sort
-	var sorted []*GraphNode // <-- Sort the Nodes, not the raw Decls!
+	var sorted []*GraphNode // Sort the Nodes, not the raw Decls!
 	var queue []*GraphNode
 
 	for _, node := range d.Nodes {
@@ -107,7 +117,7 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 	for len(queue) > 0 {
 		curr := queue[0]
 		queue = queue[1:]
-		sorted = append(sorted, curr) // <-- THE FIX
+		sorted = append(sorted, curr)
 
 		for _, depName := range curr.Dependents {
 			depNode := d.Nodes[depName]
@@ -172,7 +182,6 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 	// Filter the final AST payload
 	var pruned []ast.Decl
 	for _, node := range sorted {
-		// THE FIX: We use the pre-calculated node.Name directly!
 		if keep[node.Name] {
 			pruned = append(pruned, node.Decl)
 		}
@@ -335,7 +344,7 @@ func (d *DAG) extractDependencies(node ast.Node) []string {
 			for _, b := range v.ElifBodies {
 				visit(b)
 			}
-			visit(v.ElseBody) // The typed-nil trap is now neutralized!
+			visit(v.ElseBody)
 		case *ast.LoopExpr:
 			if v == nil {
 				return

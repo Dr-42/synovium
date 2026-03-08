@@ -1,0 +1,24 @@
+// Matrix.syn
+// The DAG will dynamically load this the moment it encounters the 'Matrix' type.
+
+struct Matrix {
+    a: i32,
+    b: i32
+}
+
+impl Matrix {
+    // Operator Overloading for our matrix
+    fnc +(self: *Self, other: *Matrix) = Matrix {
+        ret Matrix{ .a = self.a + other.a, .b = self.b + other.b };
+    }
+
+    fnc scale(self: *Self, factor: i32) {
+        self.a *= factor;
+        self.b *= factor;
+    }
+}
+
+// A completely unused function to test the Autopruner (Dead Code Elimination)
+fnc dead_code_function() = i32 {
+    ret 999;
+}

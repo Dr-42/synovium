@@ -1,0 +1,21 @@
+// main_test.syn
+fnc printf(fmt: str, ...);
+
+fnc main() = i32 {
+    defer printf("--- DAG Auto-Loader Test Complete ---\n");
+
+    printf("Booting main_test.syn...\n");
+
+    // The DAG hits 'Matrix', halts, loads 'Matrix.syn', parses it, 
+    // injects the AST into the queue, and resumes sorting!
+    m1 : Matrix = Matrix{ .a = 10, .b = 20 };
+    m2 : Matrix = Matrix{ .a = 5,  .b = 5 };
+
+    // Uses the operator overload defined in Matrix.syn
+    sum : Matrix = m1 + m2;
+    sum.scale(2);
+
+    printf("Dynamically Loaded Matrix Sum: a=%d, b=%d\n", sum.a, sum.b);
+
+    ret 0;
+}
