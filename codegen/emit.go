@@ -43,10 +43,29 @@ func (b *Builder) emitBlock(block *ast.Block) string {
 			}
 			return "<terminated>" // <-- THE FIX
 		case *ast.BreakStmt:
-			if len(b.LoopExits) > 0 {
-				b.EmitLine("  br label %%%s", b.LoopExits[len(b.LoopExits)-1])
+			targetIdx := len(b.LoopContexts) - 1
+
+			// If it's a labeled break (`brk \`search`), scan up the stack to find the target loop!
+			if n.Label != nil {
+				for i := len(b.LoopContexts) - 1; i >= 0; i-- {
+					if b.LoopContexts[i].LabelName == n.Label.Value {
+						targetIdx = i
+						break
+					}
+				}
 			}
-			return "<terminated>" // <-- THE FIX
+
+			if targetIdx >= 0 {
+				ctx := b.LoopContexts[targetIdx]
+
+				// If the break is carrying a payload, evaluate it and write it to the loop's hidden stack pointer!
+				if n.Value != nil && ctx.ResultPtr != "" {
+					valReg := b.emitExpression(n.Value)
+					b.EmitLine("  store %s %s, %s* %s", ctx.LLVMType, valReg, ctx.LLVMType, ctx.ResultPtr)
+				}
+				b.EmitLine("  br label %%%s", ctx.ExitLbl)
+			}
+			return "<terminated>"
 		}
 	}
 
@@ -700,18 +719,39 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		return ""
 
 	case *ast.LoopExpr:
+		typeID := b.Pool.NodeTypes[n]
+		llvmType := b.GetLLVMType(typeID)
+
+		// 1. If the loop yields a value, allocate a stack pointer for breaks to write into!
+		var resultPtr string
+		if llvmType != "void" {
+			resultPtr = b.NextReg()
+			b.EmitLine("  %s = alloca %s", resultPtr, llvmType)
+		}
+
 		condLbl := b.NextLabel()
 		bodyLbl := b.NextLabel()
 		exitLbl := b.NextLabel()
 
-		b.LoopExits = append(b.LoopExits, exitLbl)
+		labelName := ""
+		if n.Label != nil {
+			labelName = n.Label.Value
+		}
+
+		// 2. Push the loop context so internal breaks can find it
+		b.LoopContexts = append(b.LoopContexts, LoopContext{
+			ExitLbl:   exitLbl,
+			ResultPtr: resultPtr,
+			LLVMType:  llvmType,
+			LabelName: labelName,
+		})
 
 		var loopVar string
 		var loopEndReg string
 		var loopLLVM string
 		isRange := false
 
-		// 1. Intercept `i = 0...3` and initialize `i = 0`
+		// Initialize `i = 0` for range loops
 		if n.Condition != nil {
 			if vDecl, ok := n.Condition.(*ast.VariableDecl); ok {
 				if inf, ok := vDecl.Value.(*ast.InfixExpr); ok && inf.Operator == "..." {
@@ -731,7 +771,7 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 		b.EmitLine("  br label %%%s", condLbl)
 		b.EmitLine("\n%s:", condLbl)
 
-		// 2. Evaluate Loop Bounds or Boolean Condition dynamically!
+		// Evaluate Bounds
 		if isRange {
 			currVal := b.NextReg()
 			b.EmitLine("  %s = load %s, %s* %s", currVal, loopLLVM, loopLLVM, loopVar)
@@ -743,15 +783,14 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			condReg := b.emitExpression(condExpr)
 			b.EmitLine("  br i1 %s, label %%%s, label %%%s", condReg, bodyLbl, exitLbl)
 		} else {
-			// Infinite loop fallback
-			b.EmitLine("  br label %%%s", bodyLbl)
+			b.EmitLine("  br label %%%s", bodyLbl) // Infinite loop
 		}
 
 		b.EmitLine("\n%s:", bodyLbl)
 		bodyVal := b.emitBlock(n.Body)
 
 		if bodyVal != "<terminated>" {
-			// 3. Loop Increment (`i++`) ONLY for range loops
+			// Loop Increment (`i++`) ONLY for range loops
 			if isRange {
 				rawName := strings.TrimPrefix(loopVar, "%")
 				currVal := "%" + rawName + "_curr"
@@ -764,8 +803,16 @@ func (b *Builder) emitExpression(node ast.Expr) string {
 			b.EmitLine("  br label %%%s", condLbl) // Loop back
 		}
 
-		b.EmitLine("\n%s:", exitLbl) // Break target
-		b.LoopExits = b.LoopExits[:len(b.LoopExits)-1]
+		// 3. The Break Target
+		b.EmitLine("\n%s:", exitLbl)
+		b.LoopContexts = b.LoopContexts[:len(b.LoopContexts)-1] // Pop Context
+
+		// 4. THE FIX: Load the final value bubbled by the breaks!
+		if llvmType != "void" {
+			valReg := b.NextReg()
+			b.EmitLine("  %s = load %s, %s* %s", valReg, llvmType, llvmType, resultPtr)
+			return valReg
+		}
 		return ""
 
 	case *ast.MatchExpr:

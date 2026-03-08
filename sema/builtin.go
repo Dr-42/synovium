@@ -95,7 +95,7 @@ func (e *Evaluator) resolveTypeSignatureInternal(t ast.Type, scope *Scope) TypeI
 			concreteArgs := make([]TypeID, len(v.GenericArgs))
 			for i, arg := range v.GenericArgs {
 				concreteArgs[i] = e.resolveTypeSignature(arg, scope)
-				instName += fmt.Sprintf("_%d", concreteArgs[i])
+				instName += fmt.Sprintf("_%s", e.Pool.Types[concreteArgs[i]].Name)
 			}
 
 			// Hash Consing: Check if we already compiled this permutation!

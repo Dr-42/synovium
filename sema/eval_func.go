@@ -108,7 +108,7 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 		concreteArgs := make([]TypeID, len(node.Arguments))
 		for i, arg := range node.Arguments {
 			concreteArgs[i] = e.Evaluate(arg, scope)
-			instName += fmt.Sprintf("_%d", concreteArgs[i])
+			instName += fmt.Sprintf("_%s", e.Pool.Types[concreteArgs[i]].Name)
 		}
 
 		for _, t := range e.Pool.Types {
@@ -204,7 +204,7 @@ func (e *Evaluator) evaluateCallExpr(node *ast.CallExpr, scope *Scope) TypeID {
 				if concreteTypeID == 0 {
 					return 0
 				}
-				specializedName += fmt.Sprintf("_%d", concreteTypeID)
+				specializedName += fmt.Sprintf("_%s", e.Pool.Types[concreteTypeID].Name)
 			}
 		}
 

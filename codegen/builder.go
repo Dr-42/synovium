@@ -19,7 +19,14 @@ type Builder struct {
 	Locals          map[string]string
 	Globals         map[string]string
 	StringConstants []string
-	LoopExits       []string // <-- NEW: Tracks active loop exit blocks for `brk`
+	LoopContexts    []LoopContext
+}
+
+type LoopContext struct {
+	ExitLbl   string
+	ResultPtr string
+	LLVMType  string
+	LabelName string
 }
 
 func NewBuilder(pool *sema.TypePool) *Builder {
