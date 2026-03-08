@@ -1,54 +1,49 @@
 # Synovium Language Roadmap
 
 ## Phase 1: Formalization & Ecosystem Tooling (✅ Complete)
+
 The goal of this phase was to mathematically lock the syntax and build the editor ecosystem before writing the compiler.
+
 - [x] Design language semantics and EBNF grammar.
 - [x] Build Tree-sitter grammar (`grammar.js`).
-- [x] Resolve GLR shift/reduce conflicts (e.g., struct initialization vs. blocks).
+- [x] Resolve GLR shift/reduce conflicts.
 - [x] Compile WASM and C parser bindings.
 - [x] Helix Integration (Syntax highlighting via `highlights.scm`).
-- [-] Neovim Integration (Local treesitter parser injection).
 
 ## Phase 2: Compiler Frontend (🚧 In Progress)
+
 Translating raw source text into a structured, strictly-typed Abstract Syntax Tree.
+
 - [x] **Lexical Analysis (Lexer)**
   - [x] Map tokens, operators, and keywords.
-  - [x] Handle strict numeral bases (hex, octal, binary, floats).
-  - [x] Track line/column coordinates.
-  - [x] Byte span tracking for diagnostic reporting.
-  - [x] Lexer test suite.
-- [ ] **Abstract Syntax Tree (AST)**
-  - [ ] Define Go structs for Expressions, Statements, and Declarations.
-  - [ ] Implement `Node` interfaces.
-- [ ] **Syntactic Analysis (Parser)**
-  - [ ] Pratt Parser (Top-Down Operator Precedence) for expressions.
-  - [ ] Recursive Descent for statements and declarations.
-  - [ ] Parse Error recovery (preventing cascading panic errors).
-- [ ] **Diagnostics Engine**
-  - [ ] Build a pretty-printer for errors (using spans to underline code in red).
+- [x] **Syntactic Analysis (Parser)**
+  - [x] Pratt Parser for expressions.
+  - [x] Recursive Descent for statements and declarations.
+- [ ] **Act 2 Syntactic Surgery**
+  - [ ] Add bitwise assignment tokens (`&=`, `|=`, `^=`, `<<=`, `>>=`).
+  - [ ] Remove `yld` keyword and AST nodes.
+  - [ ] Implement `defer` statement parsing.
+  - [ ] Implement named loops (`` `label loop ``) and value-carrying breaks (``brk `label <expr>``).
 
-## Phase 3: Semantic Analysis (The Brain)
+## Phase 3: Semantic Analysis & The DAG (🚧 In Progress)
+
 Ensuring the structurally correct code actually makes logical sense.
-- [ ] **Name Resolution & Symbol Tables**
-  - [ ] Scope tracking (global, block, closure).
-  - [ ] Variable shadowing rules.
-- [ ] **Type Checker**
-  - [ ] Type inference engine.
-  - [ ] Strict type checking (preventing `1 + "hello"`).
-  - [ ] Struct and Enum resolution.
-- [ ] **Comptime Engine**
-  - [ ] Implement AST rewriting and comptime function execution.
 
-## Phase 4: Intermediate Representation (IR) & Optimization
-*Note: Depending on the backend target, we might skip to an AST-walker first or generate a custom SSA (Static Single Assignment) form.*
-- [ ] Lower AST into a flat, linear IR.
-- [ ] Constant folding and dead-code elimination.
+- [x] Order-independent global declarations via Kahn's Topological Sort.
+- [x] Zero-cost Generics and Monomorphization.
+- [x] Subprocess JIT for comptime execution.
+- [ ] **Act 2 Semantic Engine**
+  - [ ] Deterministic File System DAG (`std.math.Vector3` auto-loading).
+  - [ ] **Closure Boundary Isolation:** Upgrade `ExpectedReturnType` to a stack for safe lambda `ret` validation.
+  - [ ] Block value unification for `brk <expr>` (ensuring all breaks in a loop yield the same type).
+  - [ ] `MaskIsPure` trait enforcement (blocking outer-scope mutation).
 
-## Phase 5: Backend & Code Generation
-- [ ] **Decision:** Choose compilation target (C, LLVM IR, Cranelift, or Go-Assembly).
-- [ ] Generate target code from AST/IR.
-- [ ] Build the CLI wrapper (`syn build`, `syn run`).
+## Phase 4: Backend & Memory Semantics (Act 2)
 
-## Phase 6: Standard Library
-- [ ] Memory allocator interface.
-- [ ] Core types (Strings, Vectors, I/O).
+- [ ] Context-Bound Arenas (Implicit allocator passing for pure functions).
+- [ ] Stack-based `defer` unrolling in LLVM Codegen.
+- [ ] Dynamic Array Slicing (Fat Pointers).
+
+## Phase 5: The Ecosystem Crucible
+
+- [ ] Native C FFI via `std.inc_c("header.h")` comptime header parsing.
