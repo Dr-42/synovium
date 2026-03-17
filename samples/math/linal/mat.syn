@@ -8,8 +8,8 @@ struct Matrix {
 
 impl Matrix {
     // Operator Overloading for our matrix
-    fnc +(self: *Self, other: *Matrix) = Matrix {
-        ret Matrix{ .a = self.a + other.a, .b = self.b + other.b };
+    fnc +(self: *Self, other: *Self) = Matrix {
+        ret Self{ .a = self.a + other.a, .b = self.b + other.b };
     }
 
     fnc scale(self: *Self, factor: i32) {

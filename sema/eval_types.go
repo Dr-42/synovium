@@ -88,34 +88,34 @@ func (e *Evaluator) evaluateEnumDecl(node *ast.EnumDecl, scope *Scope) TypeID {
 }
 
 // evaluateImplDecl attaches methods to an existing Struct or Enum.
-func (e *Evaluator) evaluateImplDecl(node *ast.ImplDecl, scope *Scope) TypeID {
-	targetSym, exists := scope.Resolve(node.Target.Value)
-	if !exists || !targetSym.IsResolved {
-		return e.error(node.Target.Span(), "impl target must be a declared type")
-	}
-
-	// THE FIX: Do not take a pointer to the slice element!
-	if e.Pool.Types[targetSym.TypeID].Methods == nil {
-		e.Pool.Types[targetSym.TypeID].Methods = make(map[string]TypeID)
-	}
-
-	// Inject 'Self' into the scope so methods can legally use `self: *Self`
-	implScope := NewScope(scope)
-	implScope.Define("Self", targetSym.TypeID, false, node.Target)
-
-	for _, method := range node.Methods {
-		methodID := e.evaluateFunctionDecl(method, implScope)
-		if methodID == 0 {
-			return 0
-		}
-
-		// ALWAYS re-index the pool because evaluateFunctionDecl appends to the slice!
-		// If capacity was exceeded, the underlying array was reallocated.
-		e.Pool.Types[targetSym.TypeID].Methods[method.Name.Value] = methodID
-	}
-
-	return targetSym.TypeID
-}
+// func (e *Evaluator) evaluateImplDecl(node *ast.ImplDecl, scope *Scope) TypeID {
+// 	targetSym, exists := scope.Resolve(node.Target.Value)
+// 	if !exists || !targetSym.IsResolved {
+// 		return e.error(node.Target.Span(), "impl target must be a declared type")
+// 	}
+//
+// 	// THE FIX: Do not take a pointer to the slice element!
+// 	if e.Pool.Types[targetSym.TypeID].Methods == nil {
+// 		e.Pool.Types[targetSym.TypeID].Methods = make(map[string]TypeID)
+// 	}
+//
+// 	// Inject 'Self' into the scope so methods can legally use `self: *Self`
+// 	implScope := NewScope(scope)
+// 	implScope.Define("Self", targetSym.TypeID, false, node.Target)
+//
+// 	for _, method := range node.Methods {
+// 		methodID := e.evaluateFunctionDecl(method, implScope)
+// 		if methodID == 0 {
+// 			return 0
+// 		}
+//
+// 		// ALWAYS re-index the pool because evaluateFunctionDecl appends to the slice!
+// 		// If capacity was exceeded, the underlying array was reallocated.
+// 		e.Pool.Types[targetSym.TypeID].Methods[method.Name.Value] = methodID
+// 	}
+//
+// 	return targetSym.TypeID
+// }
 
 // evaluateMatchExpr handles exhaustiveness checking and variant unwrapping
 func (e *Evaluator) evaluateMatchExpr(node *ast.MatchExpr, scope *Scope) TypeID {

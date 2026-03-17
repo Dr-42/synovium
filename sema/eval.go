@@ -33,6 +33,13 @@ func NewEvaluator(pool *TypePool, sourceCode string) *Evaluator {
 
 // The new Rust-style error formatter!
 func (e *Evaluator) error(span lexer.Span, msg string) TypeID {
+	// 1. MULTI-FILE SPAN SAFETY
+	// If the span exceeds the bounds of the main file, it belongs to an imported module.
+	if span.Start < 0 || span.End > len(e.SourceCode) || span.Start > span.End {
+		e.Errors = append(e.Errors, fmt.Sprintf("\033[31mError\033[0m: %s\n  --> [External Module at bytes %d-%d]\n", msg, span.Start, span.End))
+		return 0
+	}
+
 	lines := strings.Split(e.SourceCode, "\n")
 
 	lineIdx := 0
@@ -245,6 +252,8 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 		return lhsType
 	}
 
+	// In sema/eval.go -> evaluateVariableDecl (Replace from rhsType down to the JIT block)
+
 	rhsType := e.Evaluate(node.Value, scope)
 	if rhsType == 0 {
 		return 0
@@ -252,18 +261,24 @@ func (e *Evaluator) evaluateVariableDecl(node *ast.VariableDecl, scope *Scope) T
 
 	lhsType := e.resolveTypeSignature(node.Type, scope)
 	if lhsType != 0 && !e.typesMatch(lhsType, rhsType) {
-		return e.error(node.Span(), "type mismatch in variable declaration")
+		expectedName := e.Pool.Types[lhsType].Name
+		givenName := e.Pool.Types[rhsType].Name
+		return e.error(node.Span(), fmt.Sprintf("type mismatch in variable declaration: expected '%s', got '%s'", expectedName, givenName))
 	}
 
 	isMut := node.Operator == "~="
 	var comptimeData []byte
 
 	if node.Operator == ":=" {
-		// --- THE FIX: SMART JIT BYPASS FOR POINTERS ---
-		if e.hasPointers(lhsType) {
-			if e.isPureLiteral(node.Value) {
-				// Bypass JIT! Leave the AST node intact so Codegen allocates it safely natively.
-				rhsType = lhsType
+		// --- THE FIX: SMART JIT BYPASS FOR POINTERS & TYPES ---
+		if e.hasPointers(lhsType) || lhsType == e.CachedPrimitives["type"] {
+			if e.isPureLiteral(node.Value) || lhsType == e.CachedPrimitives["type"] {
+				// Bypass JIT!
+				// For type aliases, we explicitly DO NOT overwrite rhsType because
+				// we want the variable's TypeID to become the concrete struct's ID!
+				if lhsType != e.CachedPrimitives["type"] {
+					rhsType = lhsType
+				}
 			} else {
 				return e.error(node.Span(), "cannot JIT evaluate dynamic expressions containing pointers (memory addresses cannot safely cross process boundaries)")
 			}
@@ -483,6 +498,12 @@ func (e *Evaluator) routeToDispatchTable(operator string, leftID, rightID TypeID
 
 func (e *Evaluator) typesMatch(expected, actual TypeID) bool {
 	if expected == actual {
+		return true
+	}
+
+	// ACT 2: Meta-Type Coercion.
+	// If the left side expects a 'type', ANY valid TypeID satisfies it!
+	if expected == e.CachedPrimitives["type"] {
 		return true
 	}
 

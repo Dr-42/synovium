@@ -113,6 +113,16 @@ func (e *Evaluator) evaluateStructInit(node *ast.StructInitExpr, scope *Scope) T
 }
 
 func (e *Evaluator) evaluateFieldAccess(node *ast.FieldAccessExpr, scope *Scope) TypeID {
+	// 1. ACT 2 COMPTIME MODULE INTERCEPT
+	// If the entire chain resolves to a global module symbol, short-circuit!
+	if chain, isChain := BuildIdentChain(node); isChain {
+		if sym, exists := scope.Resolve(chain); exists {
+			e.Pool.NodeTypes[node] = sym.TypeID
+			return sym.TypeID
+		}
+	}
+
+	// 2. Standard Struct Field Evaluation
 	leftID := e.Evaluate(node.Left, scope)
 	if leftID == 0 {
 		return 0
@@ -167,4 +177,41 @@ func (e *Evaluator) evaluateFieldAccess(node *ast.FieldAccessExpr, scope *Scope)
 	//
 	// return e.error(node.Field.Span(), "type '"+leftType.Name+"' has no field, method, or variant named '"+node.Field.Value+"'"+"Existing methods are"+methodStr)
 	return e.error(node.Field.Span(), "type '"+leftType.Name+"' has no field, method, or variant named '"+node.Field.Value+"'")
+}
+
+// In sema/eval_struct.go
+
+func (e *Evaluator) evaluateImplDecl(node *ast.ImplDecl, scope *Scope) TypeID {
+	sym, exists := scope.Resolve(node.Target.Value)
+	if !exists {
+		return e.error(node.Span(), "impl target '"+node.Target.Value+"' not found")
+	}
+
+	targetType := e.Pool.Types[sym.TypeID]
+	if (targetType.Mask&MaskIsStruct) == 0 && (targetType.Mask&MaskIsStruct) == 0 {
+		return e.error(node.Span(), "impl target must be a struct or enum")
+	}
+
+	// 1. Inject 'Self' into the local scope!
+	implScope := NewScope(scope)
+	implScope.Define("Self", sym.TypeID, false, nil)
+
+	// 2. Evaluate and bind all methods
+	for _, method := range node.Methods {
+		errCountBefore := len(e.Errors)
+		methodID := e.evaluateFunctionDecl(method, implScope)
+
+		if methodID == 0 {
+			// If evaluateFunctionDecl failed but didn't push an error, report it
+			if len(e.Errors) == errCountBefore {
+				e.error(method.Span(), fmt.Sprintf("failed to compile method '%s' (Silent evaluator failure)", method.Name.Value))
+			}
+			continue
+		}
+
+		// Map the method to the target struct
+		targetType.Methods[method.Name.Value] = methodID
+	}
+
+	return e.CachedPrimitives["void"]
 }

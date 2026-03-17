@@ -1,6 +1,9 @@
 // main_test.syn
 fnc printf(fmt: str, ...);
 
+Matrix : type := math.linal.mat.Matrix;
+Vec2 : type := math.linal.vec.Vec2;
+
 fnc main() = i32 {
     defer printf("--- DAG Auto-Loader Test Complete ---\n");
 

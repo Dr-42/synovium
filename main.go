@@ -65,24 +65,61 @@ func main() {
 	dag := sema.NewDAG(globalScope)
 
 	// --- THE AUTO-LOADER HOOK ---
-	dag.ParseModule = func(moduleName string) ([]ast.Decl, error) {
-		// When the DAG sees "std.math", it looks for "std.syn"
-		filename := moduleName + ".syn"
-		content, err := os.ReadFile(filename)
-		if err != nil {
-			// If the file doesn't exist, it's just a regular unresolved identifier.
-			// Return silently and let the Semantic Evaluator throw the error later!
-			return nil, nil
-		}
+	loadedFiles := make(map[string]bool)
 
-		l := lexer.New(string(content))
-		p := parser.New(l)
-		prog := p.ParseSourceFile()
+	dag.ParseModule = func(modulePath string) ([]ast.Decl, error) {
+		parts := strings.Split(modulePath, ".")
 
-		if len(p.Errors()) > 0 {
-			return nil, fmt.Errorf("parse errors in module '%s': %v", filename, p.Errors())
+		// Progressively shrink the path to find the deepest matching .syn file
+		// e.g. math/linal/mat/Matrix.syn -> math/linal/mat.syn (Found!)
+		for i := len(parts); i > 0; i-- {
+			filename := strings.Join(parts[:i], string(os.PathSeparator)) + ".syn"
+
+			if _, err := os.Stat(filename); err == nil {
+				if loadedFiles[filename] {
+					return nil, nil // We already parsed this file, the symbol is in the queue!
+				}
+				loadedFiles[filename] = true
+
+				content, err := os.ReadFile(filename)
+				if err != nil {
+					return nil, err
+				}
+
+				l := lexer.New(string(content))
+				p := parser.New(l)
+				prog := p.ParseSourceFile()
+
+				if len(p.Errors()) > 0 {
+					return nil, fmt.Errorf("parse errors in module '%s': %v", filename, p.Errors())
+				}
+
+				// ACT 2: AST Module Prefix Injection
+				// We rename all top-level symbols so the DAG natively scopes them.
+				modulePrefix := strings.Join(parts[:i], ".")
+				for _, decl := range prog.Declarations {
+					switch v := decl.(type) {
+					case *ast.StructDecl:
+						v.Name.Value = modulePrefix + "." + v.Name.Value
+					case *ast.EnumDecl:
+						v.Name.Value = modulePrefix + "." + v.Name.Value
+					case *ast.FunctionDecl:
+						if v.Name != nil {
+							v.Name.Value = modulePrefix + "." + v.Name.Value
+						}
+					case *ast.VariableDecl:
+						v.Name.Value = modulePrefix + "." + v.Name.Value
+					case *ast.ImplDecl:
+						// Prefix the target of the impl block
+						if !strings.Contains(v.Target.Value, ".") {
+							v.Target.Value = modulePrefix + "." + v.Target.Value
+						}
+					}
+				}
+				return prog.Declarations, nil
+			}
 		}
-		return prog.Declarations, nil
+		return nil, nil // Not a file, probably a struct field or local variable.
 	}
 	// ----------------------------
 

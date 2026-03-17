@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"synovium/ast"
@@ -74,21 +75,52 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 	}
 
 	// 2. Pass 2: Build the edges (Prerequisites -> Dependents)
+
+	// Go randomizes map iteration. We must sort the keys!
+	var sortedNames []string
+	for name := range d.Nodes {
+		sortedNames = append(sortedNames, name)
+	}
+	sort.Strings(sortedNames)
+
 	for name, node := range d.Nodes {
 		deps := d.extractDependencies(node.Decl)
 
+		// Determine the module prefix of the CURRENT node
+		// e.g., "math.linal.mat.Matrix_impl_1" -> "math.linal.mat."
+		modulePrefix := ""
+		if lastDot := strings.LastIndex(name, "."); lastDot != -1 {
+			modulePrefix = name[:lastDot+1]
+		}
+
 		uniquePrereqs := make(map[string]bool)
-		for _, req := range deps {
-			if req == name {
+		for _, rawReq := range deps {
+			if rawReq == name {
 				continue
 			}
+
+			// 1. Scope-Aware Local Resolution
+			// Prioritize local module variables/aliases over global ones
+			req := rawReq
+			if modulePrefix != "" {
+				localReq := modulePrefix + rawReq
+				if _, exists := d.Nodes[localReq]; exists {
+					req = localReq
+				}
+			}
+
+			// 2. Add the direct requirement
 			if _, exists := d.Nodes[req]; exists {
 				uniquePrereqs[req] = true
 			}
 
-			// THE FIX: Only depend on a struct's impl blocks if WE are not an impl block!
-			implPrefix := req + "_impl_"
-			if !strings.HasPrefix(name, implPrefix) {
+			// 3. Impl Block Resolution (Trace Aliases to find the True Struct!)
+			trueReq := d.resolveAlias(req)
+
+			// THE FIX: Only pull in a struct's impl blocks if WE are NOT an impl block
+			// AND we are NOT a type alias! This shatters the cyclic dependencies.
+			if !strings.Contains(name, "_impl_") && !d.isTypeAlias(node.Decl) {
+				implPrefix := trueReq + "_impl_"
 				for nName := range d.Nodes {
 					if strings.HasPrefix(nName, implPrefix) {
 						uniquePrereqs[nName] = true
@@ -231,9 +263,8 @@ func (d *DAG) extractDependencies(node ast.Node) []string {
 			if v == nil {
 				return
 			}
-			// "std.math.Vec3" maps to a dependency on "std"
-			baseName := strings.Split(v.Name, ".")[0]
-			deps = append(deps, baseName)
+			// Do not split by dot! Keep the full namespace path.
+			deps = append(deps, v.Name)
 
 		// Unpack Declarations
 		case *ast.VariableDecl:
@@ -405,6 +436,10 @@ func (d *DAG) extractDependencies(node ast.Node) []string {
 			if v == nil {
 				return
 			}
+			if chain, ok := BuildIdentChain(v); ok {
+				deps = append(deps, chain)
+			}
+			// Always visit left to keep normal struct dependencies working
 			visit(v.Left)
 		case *ast.ArrayInitExpr:
 			if v == nil {
@@ -432,4 +467,57 @@ func (d *DAG) findCycleNodes() string {
 		}
 	}
 	return strings.Join(stuck, ", ")
+}
+
+// BuildIdentChain safely unwraps a sequence of field accesses into a single namespace string.
+func BuildIdentChain(node ast.Node) (string, bool) {
+	switch n := node.(type) {
+	case *ast.Identifier:
+		return n.Value, true
+	case *ast.FieldAccessExpr:
+		left, ok := BuildIdentChain(n.Left)
+		if ok {
+			return left + "." + n.Field.Value, true
+		}
+	}
+	return "", false
+}
+
+// resolveAlias follows type aliases (e.g., `Matrix : type := math.linal.mat.Matrix`)
+// to their true global namespace identifier.
+func (d *DAG) resolveAlias(name string) string {
+	visited := make(map[string]bool)
+	curr := name
+	for {
+		if visited[curr] {
+			break
+		}
+		visited[curr] = true
+
+		node, exists := d.Nodes[curr]
+		if !exists {
+			break
+		}
+
+		if vDecl, ok := node.Decl.(*ast.VariableDecl); ok {
+			if t, ok := vDecl.Type.(*ast.NamedType); ok && t.Name == "type" {
+				if chain, ok := BuildIdentChain(vDecl.Value); ok {
+					curr = chain
+					continue
+				}
+			}
+		}
+		break
+	}
+	return curr
+}
+
+// isTypeAlias detects if a declaration is a compile-time type assignment
+func (d *DAG) isTypeAlias(decl ast.Decl) bool {
+	if vDecl, ok := decl.(*ast.VariableDecl); ok {
+		if t, ok := vDecl.Type.(*ast.NamedType); ok && t.Name == "type" {
+			return true
+		}
+	}
+	return false
 }
