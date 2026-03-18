@@ -28,3 +28,9 @@ tree-sitter-synovium/test/
 *~
 .vscode/
 .idea/
+
+# ========================
+# My LSP
+# ========================
+samples/synovium_lsp.log
+synovium_lsp.log
