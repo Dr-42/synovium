@@ -838,6 +838,7 @@ func (s *Server) declToSymbol(decl ast.Decl, uri string, doc *Document) *workspa
 		}
 	case *ast.VariableDecl:
 		if v.Name != nil {
+			// compute span safely (already fixed in ast.Span())
 			return &workspaceSymbol{
 				name:       v.Name.Value,
 				kind:       SKVariable,

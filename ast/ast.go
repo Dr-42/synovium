@@ -82,8 +82,19 @@ func (v *VariableDecl) stmtNode() {}
 
 func (v *VariableDecl) declNode() {}
 
+// ast.go - VariableDecl.Span()
 func (v *VariableDecl) Span() lexer.Span {
-	return lexer.Span{Start: v.Name.Span().Start, End: v.Value.Span().End}
+	start := v.Token.Span.Start // fallback to the identifier token
+	if v.Name != nil {
+		start = v.Name.Span().Start
+	}
+	end := start
+	if v.Value != nil {
+		end = v.Value.Span().End
+	} else if v.Type != nil {
+		end = v.Type.Span().End
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 // ExprStmt wraps an expression so it can sit legally in a statement list (e.g., `1 + 1;`)
