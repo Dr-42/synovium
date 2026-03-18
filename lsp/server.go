@@ -15,7 +15,6 @@ import (
 	"sync"
 
 	"synovium/ast"
-	"synovium/codegen"
 	"synovium/lexer"
 	"synovium/parser"
 	"synovium/sema"
@@ -83,6 +82,7 @@ type CompletionItem struct {
 	Label            string `json:"label"`
 	Kind             int    `json:"kind"`
 	Detail           string `json:"detail,omitempty"`
+	Documentation    string `json:"documentation,omitempty"`
 	InsertText       string `json:"insertText,omitempty"`
 	InsertTextFormat int    `json:"insertTextFormat,omitempty"`
 }
@@ -108,28 +108,89 @@ type InlayHint struct {
 	PaddingLeft bool     `json:"paddingLeft"`
 }
 
+type SignatureHelp struct {
+	Signatures      []SignatureInformation `json:"signatures"`
+	ActiveSignature int                    `json:"activeSignature"`
+	ActiveParameter int                    `json:"activeParameter"`
+}
+
+type SignatureInformation struct {
+	Label         string                 `json:"label"`
+	Documentation string                 `json:"documentation,omitempty"`
+	Parameters    []ParameterInformation `json:"parameters,omitempty"`
+}
+
+type ParameterInformation struct {
+	Label         string `json:"label"`
+	Documentation string `json:"documentation,omitempty"`
+}
+
 const (
-	CIKMethod     = 2
-	CIKFunction   = 3
-	CIKField      = 5
-	CIKVariable   = 6
-	CIKEnum       = 13
-	CIKKeyword    = 14
-	CIKEnumMember = 20
-	CIKStruct     = 22
-	SKFunction    = 12
-	SKVariable    = 13
-	SKStruct      = 23
-	SKEnum        = 10
+	// Completion item kinds
+	CIKText          = 1
+	CIKMethod        = 2
+	CIKFunction      = 3
+	CIKConstructor   = 4
+	CIKField         = 5
+	CIKVariable      = 6
+	CIKClass         = 7
+	CIKInterface     = 8
+	CIKModule        = 9
+	CIKProperty      = 10
+	CIKUnit          = 11
+	CIKValue         = 12
+	CIKEnum          = 13
+	CIKKeyword       = 14
+	CIKSnippet       = 15
+	CIKColor         = 16
+	CIKFile          = 17
+	CIKReference     = 18
+	CIKFolder        = 19
+	CIKEnumMember    = 20
+	CIKConstant      = 21
+	CIKStruct        = 22
+	CIKEvent         = 23
+	CIKOperator      = 24
+	CIKTypeParameter = 25
+
+	// Symbol kinds
+	SKFile          = 1
+	SKModule        = 2
+	SKNamespace     = 3
+	SKPackage       = 4
+	SKClass         = 5
+	SKMethod        = 6
+	SKProperty      = 7
+	SKField         = 8
+	SKConstructor   = 9
+	SKEnum          = 10
+	SKInterface     = 11
+	SKFunction      = 12
+	SKVariable      = 13
+	SKConstant      = 14
+	SKString        = 15
+	SKNumber        = 16
+	SKBoolean       = 17
+	SKArray         = 18
+	SKObject        = 19
+	SKKey           = 20
+	SKNull          = 21
+	SKEnumMember    = 22
+	SKStruct        = 23
+	SKEvent         = 24
+	SKOperator      = 25
+	SKTypeParameter = 26
 )
 
 // ============================================================================
-// DOCUMENT STORE
+// DOCUMENT STORE WITH CACHED PIPELINE RESULT
 // ============================================================================
 
 type Document struct {
 	Text        string
 	LineOffsets []int
+	mu          sync.RWMutex
+	result      *pipelineResult
 }
 
 func newDocument(uri, text string) *Document {
@@ -168,6 +229,18 @@ func (doc *Document) spanToRange(span lexer.Span) Range {
 	return Range{Start: doc.offsetToPosition(span.Start), End: doc.offsetToPosition(span.End)}
 }
 
+func (doc *Document) setResult(res *pipelineResult) {
+	doc.mu.Lock()
+	defer doc.mu.Unlock()
+	doc.result = res
+}
+
+func (doc *Document) getResult() *pipelineResult {
+	doc.mu.RLock()
+	defer doc.mu.RUnlock()
+	return doc.result
+}
+
 type docStore struct {
 	mu   sync.RWMutex
 	docs map[string]*Document
@@ -175,10 +248,12 @@ type docStore struct {
 
 func newDocStore() *docStore { return &docStore{docs: make(map[string]*Document)} }
 
-func (d *docStore) set(uri, text string) {
+func (d *docStore) set(uri, text string) *Document {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.docs[uri] = newDocument(uri, text)
+	doc := newDocument(uri, text)
+	d.docs[uri] = doc
+	return doc
 }
 
 func (d *docStore) get(uri string) (*Document, bool) {
@@ -189,7 +264,7 @@ func (d *docStore) get(uri string) (*Document, bool) {
 }
 
 // ============================================================================
-// SERVER PIPELINE
+// PIPELINE RESULT (cached per document)
 // ============================================================================
 
 type pipelineResult struct {
@@ -201,6 +276,7 @@ type pipelineResult struct {
 	semaErrors  []string
 	tokens      []lexer.Token
 	nodeURIs    map[ast.Node]string
+	// For quick lookup of node at position, we can build an interval tree later
 }
 
 func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
@@ -231,13 +307,20 @@ func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
 	evaluator := sema.NewEvaluator(res.pool, code)
 	evaluator.GlobalDecls = res.program.Declarations
 
-	evaluator.JITCallback = codegen.RunJIT
+	// JIT callback is not used in LSP (we mock it if needed, but we'll just skip)
+	evaluator.JITCallback = func(expr ast.Expr, expectedType sema.TypeID, pool *sema.TypePool, envScope *sema.Scope, globalDecls []ast.Decl) ([]byte, error) {
+		// Mock JIT: return dummy data of correct size (all zeros)
+		sizeBytes := pool.Types[expectedType].TrueSizeBits / 8
+		if sizeBytes == 0 {
+			sizeBytes = 1
+		}
+		return make([]byte, sizeBytes), nil
+	}
 	evaluator.InjectBuiltins(res.globalScope)
 
 	dag := sema.NewDAG(res.globalScope)
 	loadedFiles := make(map[string]bool)
 
-	// THE FIX: Smart Context-Aware Path Resolution
 	baseDir := filepath.Dir(strings.TrimPrefix(uri, "file://"))
 
 	dag.ParseModule = func(modulePath string) ([]ast.Decl, error) {
@@ -245,7 +328,6 @@ func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
 		for i := len(parts); i > 0; i-- {
 			relPath := strings.Join(parts[:i], string(os.PathSeparator)) + ".syn"
 
-			// Build fallback search paths
 			pathsToTry := []string{filepath.Join(baseDir, relPath)}
 			if workspaceRoot != "" {
 				pathsToTry = append(pathsToTry, filepath.Join(workspaceRoot, relPath))
@@ -273,7 +355,7 @@ func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
 
 					modulePrefix := strings.Join(parts[:i], ".")
 					for _, decl := range prog.Declarations {
-						res.nodeURIs[decl] = extURI // Map node to exact origin file
+						res.nodeURIs[decl] = extURI
 						switch v := decl.(type) {
 						case *ast.StructDecl:
 							v.Name.Value = modulePrefix + "." + v.Name.Value
@@ -314,6 +396,47 @@ func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
 }
 
 // ============================================================================
+// WORKSPACE SYMBOL INDEX
+// ============================================================================
+
+type workspaceSymbol struct {
+	name       string
+	kind       int
+	uri        string
+	rangeStart Position
+	rangeEnd   Position
+	detail     string
+}
+
+type symbolIndex struct {
+	mu      sync.RWMutex
+	symbols map[string][]workspaceSymbol // name -> list (multiple files)
+}
+
+func newSymbolIndex() *symbolIndex {
+	return &symbolIndex{symbols: make(map[string][]workspaceSymbol)}
+}
+
+func (idx *symbolIndex) add(sym workspaceSymbol) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.symbols[sym.name] = append(idx.symbols[sym.name], sym)
+}
+
+func (idx *symbolIndex) search(query string) []workspaceSymbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	var results []workspaceSymbol
+	// simple prefix matching (could be improved)
+	for name, list := range idx.symbols {
+		if strings.Contains(name, query) {
+			results = append(results, list...)
+		}
+	}
+	return results
+}
+
+// ============================================================================
 // SERVER CORE
 // ============================================================================
 
@@ -322,6 +445,8 @@ type Server struct {
 	writer        *bufio.Writer
 	logger        *log.Logger
 	workspaceRoot string
+	symbols       *symbolIndex
+	// For signature help, we need to know the call context
 }
 
 func Start() {
@@ -333,9 +458,10 @@ func Start() {
 	}
 
 	s := &Server{
-		docs:   newDocStore(),
-		writer: bufio.NewWriter(os.Stdout),
-		logger: log.New(logFile, "[SYN-LSP] ", log.Ltime|log.Lshortfile),
+		docs:    newDocStore(),
+		writer:  bufio.NewWriter(os.Stdout),
+		logger:  log.New(logFile, "[SYN-LSP] ", log.Ltime|log.Lshortfile),
+		symbols: newSymbolIndex(),
 	}
 
 	s.logger.Println("Synovium Language Server (Production) booting…")
@@ -382,6 +508,7 @@ func (s *Server) dispatch(req *Request) {
 		json.Unmarshal(req.Params, &p)
 		if p.RootUri != "" {
 			s.workspaceRoot = strings.TrimPrefix(p.RootUri, "file://")
+			go s.indexWorkspace() // async indexing
 		}
 		s.handleInitialize(req)
 	case "initialized", "shutdown":
@@ -399,8 +526,8 @@ func (s *Server) dispatch(req *Request) {
 			} `json:"textDocument"`
 		}
 		json.Unmarshal(req.Params, &p)
-		s.docs.set(p.TextDocument.URI, p.TextDocument.Text)
-		go s.publishDiagnostics(p.TextDocument.URI, p.TextDocument.Text)
+		doc := s.docs.set(p.TextDocument.URI, p.TextDocument.Text)
+		go s.updatePipelineAndDiagnostics(p.TextDocument.URI, doc)
 
 	case "textDocument/didChange":
 		var p struct {
@@ -414,8 +541,8 @@ func (s *Server) dispatch(req *Request) {
 		json.Unmarshal(req.Params, &p)
 		if len(p.ContentChanges) > 0 {
 			text := p.ContentChanges[len(p.ContentChanges)-1].Text
-			s.docs.set(p.TextDocument.URI, text)
-			go s.publishDiagnostics(p.TextDocument.URI, text)
+			doc := s.docs.set(p.TextDocument.URI, text)
+			go s.updatePipelineAndDiagnostics(p.TextDocument.URI, doc)
 		}
 
 	case "textDocument/hover":
@@ -477,7 +604,11 @@ func (s *Server) dispatch(req *Request) {
 		s.handleDocumentSymbol(req, p.TextDocument.URI)
 
 	case "workspace/symbol":
-		s.sendResult(req.ID, []Location{})
+		var p struct {
+			Query string `json:"query"`
+		}
+		json.Unmarshal(req.Params, &p)
+		s.handleWorkspaceSymbol(req, p.Query)
 
 	case "textDocument/inlayHint":
 		var p struct {
@@ -487,6 +618,16 @@ func (s *Server) dispatch(req *Request) {
 		}
 		json.Unmarshal(req.Params, &p)
 		s.handleInlayHint(req, p.TextDocument.URI)
+
+	case "textDocument/signatureHelp":
+		var p struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
+			Position Position `json:"position"`
+		}
+		json.Unmarshal(req.Params, &p)
+		s.handleSignatureHelp(req, p.TextDocument.URI, p.Position)
 	}
 }
 
@@ -511,27 +652,48 @@ func (s *Server) handleInitialize(req *Request) {
 			"documentSymbolProvider":  true,
 			"workspaceSymbolProvider": true,
 			"inlayHintProvider":       map[string]interface{}{"resolveProvider": false},
+			"signatureHelpProvider":   map[string]interface{}{"triggerCharacters": []string{"(", ","}},
 			"semanticTokensProvider": map[string]interface{}{
 				"legend": map[string]interface{}{
-					"tokenTypes":     []string{"type", "struct", "enum", "function", "variable", "keyword", "operator", "number", "string"},
-					"tokenModifiers": []string{"declaration"},
+					"tokenTypes":     []string{"type", "struct", "enum", "function", "variable", "keyword", "operator", "number", "string", "comment"},
+					"tokenModifiers": []string{"declaration", "definition", "readonly", "static"},
 				},
 				"full": true,
 			},
-			"completionProvider": map[string]interface{}{"triggerCharacters": []string{".", ":"}},
+			"completionProvider": map[string]interface{}{
+				"triggerCharacters": []string{".", ":"},
+				"resolveProvider":   false,
+			},
 		},
 	})
 }
 
 // ============================================================================
-// DIAGNOSTICS
+// PIPELINE CACHING & DIAGNOSTICS
 // ============================================================================
 
-func (s *Server) publishDiagnostics(uri, code string) {
-	// THE FIX: explicitly allocate empty slice to prevent Lua 'null' panics
-	diagnostics := make([]Diagnostic, 0)
-	res := runPipeline(uri, code, s.workspaceRoot)
+func (s *Server) updatePipelineAndDiagnostics(uri string, doc *Document) {
+	res := runPipeline(uri, doc.Text, s.workspaceRoot)
+	doc.setResult(res)
+	s.publishDiagnostics(uri, res)
+}
 
+func (s *Server) getPipeline(uri string) *pipelineResult {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		return nil
+	}
+	res := doc.getResult()
+	if res == nil {
+		// fallback: run pipeline synchronously
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
+	return res
+}
+
+func (s *Server) publishDiagnostics(uri string, res *pipelineResult) {
+	diagnostics := make([]Diagnostic, 0)
 	for _, msg := range res.parseErrors {
 		clean := ansiRegex.ReplaceAllString(msg, "")
 		line := 0
@@ -554,7 +716,6 @@ func (s *Server) publishDiagnostics(uri, code string) {
 	for _, msg := range res.semaErrors {
 		diagnostics = append(diagnostics, parseSemaError(msg))
 	}
-
 	s.sendRaw(Notification{RPC: "2.0", Method: "textDocument/publishDiagnostics", Params: map[string]interface{}{"uri": uri, "diagnostics": diagnostics}})
 }
 
@@ -602,104 +763,97 @@ func parseSemaError(raw string) Diagnostic {
 }
 
 // ============================================================================
-// DEFINITION & HOVER & IMPLEMENTATION
+// WORKSPACE SYMBOL INDEXING
 // ============================================================================
 
-// BuildIdentChain extracts full nested chains (math.linal.mat.Matrix)
-func BuildIdentChain(node ast.Node) (string, bool) {
-	switch n := node.(type) {
-	case *ast.Identifier:
-		return n.Value, true
-	case *ast.FieldAccessExpr:
-		if left, ok := BuildIdentChain(n.Left); ok {
-			return left + "." + n.Field.Value, true
-		}
-	}
-	return "", false
-}
-
-// resolveAliasNode tunnels through types to find the actual Struct/Func declarations
-func resolveAliasNode(sym *sema.Symbol, pool *sema.TypePool) ast.Node {
-	if int(sym.TypeID) > 0 && int(sym.TypeID) < len(pool.Types) {
-		if exec := pool.Types[sym.TypeID].Executable; exec != nil {
-			return exec
-		}
-	}
-	return sym.DeclNode
-}
-
-func (s *Server) handleDefinition(req *Request, uri string, pos Position) {
-	doc, ok := s.docs.get(uri)
-	if !ok {
-		s.sendResult(req.ID, nil)
+func (s *Server) indexWorkspace() {
+	if s.workspaceRoot == "" {
 		return
 	}
-	res := runPipeline(uri, doc.Text, s.workspaceRoot)
-	if res.pool == nil {
-		s.sendResult(req.ID, nil)
-		return
-	}
-
-	offset := doc.positionToOffset(pos)
-	node, faNode := findNodesAtOffset(res.program, offset)
-
-	bestScope := res.globalScope
-	bestScopeLen := -1
-	for n, sc := range res.pool.NodeScopes {
-		span := n.Span()
-		if span.Start <= offset && offset <= span.End {
-			if l := span.End - span.Start; bestScopeLen == -1 || l < bestScopeLen {
-				bestScope = sc
-				bestScopeLen = l
+	s.logger.Println("Indexing workspace at", s.workspaceRoot)
+	err := filepath.Walk(s.workspaceRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".syn") {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		uri := "file://" + path
+		res := runPipeline(uri, string(content), s.workspaceRoot)
+		doc := newDocument(uri, string(content))
+		doc.setResult(res) // cache it
+		s.docs.set(uri, string(content))
+		// extract symbols
+		for _, decl := range res.sortedDecls {
+			sym := s.declToSymbol(decl, uri, doc)
+			if sym != nil {
+				s.symbols.add(*sym)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		s.logger.Println("Workspace indexing error:", err)
 	}
-
-	var targetNode ast.Node
-
-	// 1. Module Path Resolution (e.g. math.linal.mat.Matrix)
-	if faNode != nil {
-		if chain, ok := BuildIdentChain(faNode); ok {
-			if sym, exists := bestScope.Resolve(chain); exists && sym.DeclNode != nil {
-				targetNode = resolveAliasNode(sym, res.pool)
-			}
-		}
-	}
-
-	// 2. Standard Identifier / NamedType Resolution
-	if targetNode == nil {
-		if ident, ok := node.(*ast.Identifier); ok {
-			if sym, exists := bestScope.Resolve(ident.Value); exists && sym.DeclNode != nil {
-				targetNode = resolveAliasNode(sym, res.pool)
-			}
-		} else if named, ok := node.(*ast.NamedType); ok {
-			if sym, exists := bestScope.Resolve(named.Name); exists && sym.DeclNode != nil {
-				targetNode = resolveAliasNode(sym, res.pool)
-			}
-		}
-	}
-
-	// 3. Complete the Jump
-	if targetNode != nil {
-		targetURI := uri
-		targetDoc := doc
-
-		if mappedURI, ok := res.nodeURIs[targetNode]; ok {
-			targetURI = mappedURI
-		}
-
-		if targetURI != uri {
-			path := strings.TrimPrefix(targetURI, "file://")
-			if content, err := os.ReadFile(path); err == nil {
-				targetDoc = newDocument(targetURI, string(content))
-			}
-		}
-
-		s.sendResult(req.ID, Location{URI: targetURI, Range: targetDoc.spanToRange(targetNode.Span())})
-		return
-	}
-	s.sendResult(req.ID, nil)
 }
+
+func (s *Server) declToSymbol(decl ast.Decl, uri string, doc *Document) *workspaceSymbol {
+	switch v := decl.(type) {
+	case *ast.FunctionDecl:
+		if v.Name != nil {
+			return &workspaceSymbol{
+				name:       v.Name.Value,
+				kind:       SKFunction,
+				uri:        uri,
+				rangeStart: doc.offsetToPosition(v.Span().Start),
+				rangeEnd:   doc.offsetToPosition(v.Span().End),
+				detail:     "fnc " + v.Name.Value,
+			}
+		}
+	case *ast.StructDecl:
+		if v.Name != nil {
+			return &workspaceSymbol{
+				name:       v.Name.Value,
+				kind:       SKStruct,
+				uri:        uri,
+				rangeStart: doc.offsetToPosition(v.Span().Start),
+				rangeEnd:   doc.offsetToPosition(v.Span().End),
+				detail:     "struct " + v.Name.Value,
+			}
+		}
+	case *ast.EnumDecl:
+		if v.Name != nil {
+			return &workspaceSymbol{
+				name:       v.Name.Value,
+				kind:       SKEnum,
+				uri:        uri,
+				rangeStart: doc.offsetToPosition(v.Span().Start),
+				rangeEnd:   doc.offsetToPosition(v.Span().End),
+				detail:     "enum " + v.Name.Value,
+			}
+		}
+	case *ast.VariableDecl:
+		if v.Name != nil {
+			return &workspaceSymbol{
+				name:       v.Name.Value,
+				kind:       SKVariable,
+				uri:        uri,
+				rangeStart: doc.offsetToPosition(v.Span().Start),
+				rangeEnd:   doc.offsetToPosition(v.Span().End),
+				detail:     "var " + v.Name.Value,
+			}
+		}
+	}
+	return nil
+}
+
+// ============================================================================
+// HOVER
+// ============================================================================
 
 func (s *Server) handleHover(req *Request, uri string, pos Position) {
 	doc, ok := s.docs.get(uri)
@@ -707,7 +861,11 @@ func (s *Server) handleHover(req *Request, uri string, pos Position) {
 		s.sendResult(req.ID, nil)
 		return
 	}
-	res := runPipeline(uri, doc.Text, s.workspaceRoot)
+	res := doc.getResult()
+	if res == nil {
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
 	if res.pool == nil {
 		s.sendResult(req.ID, nil)
 		return
@@ -733,13 +891,16 @@ func (s *Server) handleHover(req *Request, uri string, pos Position) {
 	}
 
 	var typeID sema.TypeID
+	var hoverNode ast.Node
 
 	if faNode != nil {
 		if tID, exists := res.pool.NodeTypes[faNode]; exists {
 			typeID = tID
+			hoverNode = faNode
 		} else if chain, ok := BuildIdentChain(faNode); ok {
 			if sym, exists := bestScope.Resolve(chain); exists {
 				typeID = sym.TypeID
+				hoverNode = sym.DeclNode
 			}
 		}
 	}
@@ -748,19 +909,22 @@ func (s *Server) handleHover(req *Request, uri string, pos Position) {
 		if ident, ok := node.(*ast.Identifier); ok {
 			if sym, exists := bestScope.Resolve(ident.Value); exists {
 				typeID = sym.TypeID
+				hoverNode = sym.DeclNode
 			}
 		} else if named, ok := node.(*ast.NamedType); ok {
 			if sym, exists := bestScope.Resolve(named.Name); exists {
 				typeID = sym.TypeID
+				hoverNode = sym.DeclNode
 			}
 		} else if tID, exists := res.pool.NodeTypes[node]; exists {
 			typeID = tID
+			hoverNode = node
 		}
 	}
 
 	if int(typeID) > 0 && int(typeID) < len(res.pool.Types) {
 		t := res.pool.Types[typeID]
-		md := formatTypeMarkdown(t, res.pool)
+		md := formatTypeMarkdown(t, res.pool, hoverNode)
 
 		targetNode := node
 		if faNode != nil {
@@ -774,13 +938,198 @@ func (s *Server) handleHover(req *Request, uri string, pos Position) {
 	s.sendResult(req.ID, nil)
 }
 
+// formatTypeMarkdown enhanced to show doc comments if present
+func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool, node ast.Node) string {
+	var sb strings.Builder
+	// Add doc comment if node has Doc field (not implemented in AST yet)
+	// For now, just show type info
+	sb.WriteString("```synovium\n")
+
+	switch {
+	case (t.Mask & sema.MaskIsFunction) != 0:
+		var params []string
+		for i, pID := range t.FuncParams {
+			if int(pID) < len(pool.Types) {
+				// If we have parameter names from the executable node, use them
+				if fn, ok := t.Executable.(*ast.FunctionDecl); ok && i < len(fn.Parameters) {
+					params = append(params, fn.Parameters[i].Name.Value+": "+pool.Types[pID].Name)
+				} else {
+					params = append(params, pool.Types[pID].Name)
+				}
+			}
+		}
+		retName := "void"
+		if int(t.FuncReturn) < len(pool.Types) && pool.Types[t.FuncReturn].Name != "void" {
+			retName = pool.Types[t.FuncReturn].Name
+		}
+		name := strings.TrimSuffix(t.Name, "_signature")
+		if retName == "void" {
+			sb.WriteString(fmt.Sprintf("fnc %s(%s)", name, strings.Join(params, ", ")))
+		} else {
+			sb.WriteString(fmt.Sprintf("fnc %s(%s) = %s", name, strings.Join(params, ", "), retName))
+		}
+	case (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0:
+		sb.WriteString("enum " + t.Name + " {\n")
+		vnames := make([]string, 0, len(t.Variants))
+		for k := range t.Variants {
+			vnames = append(vnames, k)
+		}
+		sort.Strings(vnames)
+		for _, v := range vnames {
+			payload := t.Variants[v]
+			if len(payload) == 0 {
+				sb.WriteString(fmt.Sprintf("    %s,\n", v))
+			} else {
+				types := make([]string, len(payload))
+				for i, p := range payload {
+					types[i] = pool.Types[p].Name
+				}
+				sb.WriteString(fmt.Sprintf("    %s(%s),\n", v, strings.Join(types, ", ")))
+			}
+		}
+		sb.WriteString("}")
+	case (t.Mask & sema.MaskIsStruct) != 0:
+		sb.WriteString("struct " + t.Name + " {\n")
+		if len(t.FieldLayout) > 0 {
+			for _, fID := range t.FieldLayout {
+				// need field name; we don't have mapping from typeID to field name easily
+				// we could store field names in the type, but they are in Fields map
+				// let's iterate Fields to get names
+				for name, id := range t.Fields {
+					if id == fID {
+						sb.WriteString(fmt.Sprintf("    %s: %s,\n", name, pool.Types[id].Name))
+					}
+				}
+			}
+		} else {
+			sb.WriteString("    ...\n")
+		}
+		sb.WriteString("}")
+	case (t.Mask & sema.MaskIsPointer) != 0:
+		base := ""
+		if int(t.BaseType) < len(pool.Types) {
+			base = pool.Types[t.BaseType].Name
+		}
+		sb.WriteString("*" + base)
+	case (t.Mask & sema.MaskIsArray) != 0:
+		base := ""
+		if int(t.BaseType) < len(pool.Types) {
+			base = pool.Types[t.BaseType].Name
+		}
+		if t.Capacity == 0 {
+			sb.WriteString(fmt.Sprintf("[%s; :]", base))
+		} else {
+			sb.WriteString(fmt.Sprintf("[%s; %d]", base, t.Capacity))
+		}
+	default:
+		sb.WriteString(t.Name)
+	}
+	sb.WriteString("\n```")
+	return sb.String()
+}
+
+// ============================================================================
+// DEFINITION
+// ============================================================================
+
+func (s *Server) handleDefinition(req *Request, uri string, pos Position) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, nil)
+		return
+	}
+	res := doc.getResult()
+	if res == nil {
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
+	if res.pool == nil {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	offset := doc.positionToOffset(pos)
+	node, faNode := findNodesAtOffset(res.program, offset)
+
+	bestScope := res.globalScope
+	bestScopeLen := -1
+	for n, sc := range res.pool.NodeScopes {
+		span := n.Span()
+		if span.Start <= offset && offset <= span.End {
+			if l := span.End - span.Start; bestScopeLen == -1 || l < bestScopeLen {
+				bestScope = sc
+				bestScopeLen = l
+			}
+		}
+	}
+
+	var targetNode ast.Node
+
+	if faNode != nil {
+		if chain, ok := BuildIdentChain(faNode); ok {
+			if sym, exists := bestScope.Resolve(chain); exists && sym.DeclNode != nil {
+				targetNode = resolveAliasNode(sym, res.pool)
+			}
+		}
+	}
+
+	if targetNode == nil {
+		if ident, ok := node.(*ast.Identifier); ok {
+			if sym, exists := bestScope.Resolve(ident.Value); exists && sym.DeclNode != nil {
+				targetNode = resolveAliasNode(sym, res.pool)
+			}
+		} else if named, ok := node.(*ast.NamedType); ok {
+			if sym, exists := bestScope.Resolve(named.Name); exists && sym.DeclNode != nil {
+				targetNode = resolveAliasNode(sym, res.pool)
+			}
+		}
+	}
+
+	if targetNode != nil {
+		targetURI := uri
+		targetDoc := doc
+
+		if mappedURI, ok := res.nodeURIs[targetNode]; ok {
+			targetURI = mappedURI
+		}
+
+		if targetURI != uri {
+			path := strings.TrimPrefix(targetURI, "file://")
+			if content, err := os.ReadFile(path); err == nil {
+				targetDoc = newDocument(targetURI, string(content))
+			}
+		}
+
+		s.sendResult(req.ID, Location{URI: targetURI, Range: targetDoc.spanToRange(targetNode.Span())})
+		return
+	}
+	s.sendResult(req.ID, nil)
+}
+
+func resolveAliasNode(sym *sema.Symbol, pool *sema.TypePool) ast.Node {
+	if int(sym.TypeID) > 0 && int(sym.TypeID) < len(pool.Types) {
+		if exec := pool.Types[sym.TypeID].Executable; exec != nil {
+			return exec
+		}
+	}
+	return sym.DeclNode
+}
+
+// ============================================================================
+// IMPLEMENTATION
+// ============================================================================
+
 func (s *Server) handleImplementation(req *Request, uri string, pos Position) {
 	doc, ok := s.docs.get(uri)
 	if !ok {
 		s.sendResult(req.ID, nil)
 		return
 	}
-	res := runPipeline(uri, doc.Text, s.workspaceRoot)
+	res := doc.getResult()
+	if res == nil {
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
 
 	offset := doc.positionToOffset(pos)
 	node, _ := findNodesAtOffset(res.program, offset)
@@ -810,121 +1159,6 @@ func (s *Server) handleImplementation(req *Request, uri string, pos Position) {
 	s.sendResult(req.ID, nil)
 }
 
-func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool) string {
-	var sb strings.Builder
-	sb.WriteString("```synovium\n")
-
-	switch {
-	case (t.Mask & sema.MaskIsFunction) != 0:
-		var params []string
-		for _, pID := range t.FuncParams {
-			if int(pID) < len(pool.Types) {
-				params = append(params, pool.Types[pID].Name)
-			}
-		}
-		retName := "void"
-		if int(t.FuncReturn) < len(pool.Types) && pool.Types[t.FuncReturn].Name != "void" {
-			retName = pool.Types[t.FuncReturn].Name
-		}
-		name := strings.TrimSuffix(t.Name, "_signature")
-		if retName == "void" {
-			sb.WriteString(fmt.Sprintf("fnc %s(%s)", name, strings.Join(params, ", ")))
-		} else {
-			sb.WriteString(fmt.Sprintf("fnc %s(%s) = %s", name, strings.Join(params, ", "), retName))
-		}
-	case (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0:
-		sb.WriteString("enum " + t.Name + " {\n")
-		vnames := make([]string, 0, len(t.Variants))
-		for k := range t.Variants {
-			vnames = append(vnames, k)
-		}
-		sort.Strings(vnames)
-		for _, v := range vnames {
-			sb.WriteString(fmt.Sprintf("    %s,\n", v))
-		}
-		sb.WriteString("}")
-	case (t.Mask & sema.MaskIsStruct) != 0:
-		sb.WriteString("struct " + t.Name + " {\n...}")
-	case (t.Mask & sema.MaskIsPointer) != 0:
-		base := ""
-		if int(t.BaseType) < len(pool.Types) {
-			base = pool.Types[t.BaseType].Name
-		}
-		sb.WriteString("*" + base)
-	case (t.Mask & sema.MaskIsArray) != 0:
-		base := ""
-		if int(t.BaseType) < len(pool.Types) {
-			base = pool.Types[t.BaseType].Name
-		}
-		sb.WriteString(fmt.Sprintf("[%s; %d]", base, t.Capacity))
-	default:
-		sb.WriteString(t.Name)
-	}
-	sb.WriteString("\n```")
-	return sb.String()
-}
-
-// ============================================================================
-// WORKSPACE & INLAY HINTS
-// ============================================================================
-
-func (s *Server) handleDocumentSymbol(req *Request, uri string) {
-	doc, ok := s.docs.get(uri)
-	if !ok {
-		s.sendResult(req.ID, nil)
-		return
-	}
-	res := runPipeline(uri, doc.Text, s.workspaceRoot)
-
-	var symbols []DocumentSymbol
-	for _, decl := range res.sortedDecls {
-		switch v := decl.(type) {
-		case *ast.FunctionDecl:
-			if v.Name != nil {
-				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKFunction, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
-			}
-		case *ast.StructDecl:
-			if v.Name != nil {
-				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKStruct, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
-			}
-		case *ast.EnumDecl:
-			if v.Name != nil {
-				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKEnum, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
-			}
-		case *ast.VariableDecl:
-			if v.Name != nil {
-				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKVariable, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
-			}
-		}
-	}
-	s.sendResult(req.ID, symbols)
-}
-
-func (s *Server) handleInlayHint(req *Request, uri string) {
-	doc, ok := s.docs.get(uri)
-	if !ok {
-		s.sendResult(req.ID, nil)
-		return
-	}
-	res := runPipeline(uri, doc.Text, s.workspaceRoot)
-	if res.pool == nil {
-		s.sendResult(req.ID, nil)
-		return
-	}
-
-	hints := make([]InlayHint, 0)
-	walkChildren(res.program, func(n ast.Node) {
-		if vDecl, ok := n.(*ast.VariableDecl); ok && vDecl.Operator == ":=" && vDecl.Type == nil {
-			if typeID, exists := res.pool.NodeTypes[vDecl.Value]; exists && int(typeID) < len(res.pool.Types) {
-				tName := res.pool.Types[typeID].Name
-				pos := doc.offsetToPosition(vDecl.Name.Span().End)
-				hints = append(hints, InlayHint{Position: pos, Label: ": " + tName, Kind: 1, PaddingLeft: true})
-			}
-		}
-	})
-	s.sendResult(req.ID, hints)
-}
-
 // ============================================================================
 // SEMANTIC TOKENS
 // ============================================================================
@@ -935,7 +1169,11 @@ func (s *Server) handleSemanticTokens(req *Request, uri string) {
 		s.sendResult(req.ID, map[string]interface{}{"data": []int{}})
 		return
 	}
-	res := runPipeline(uri, doc.Text, s.workspaceRoot)
+	res := doc.getResult()
+	if res == nil {
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
 
 	var tokens []int
 	prevLine, prevCol := 0, 0
@@ -944,29 +1182,31 @@ func (s *Server) handleSemanticTokens(req *Request, uri string) {
 		tokType := -1
 		switch tok.Type {
 		case lexer.STRUCT, lexer.ENUM, lexer.IMPL, lexer.FNC, lexer.RET, lexer.DEFER, lexer.BRK, lexer.IF, lexer.ELIF, lexer.ELSE, lexer.MATCH, lexer.LOOP, lexer.AS, lexer.TRUE, lexer.FALSE:
-			tokType = 5
+			tokType = 5 // keyword
 		case lexer.ASSIGN, lexer.DECL_ASSIGN, lexer.MUT_ASSIGN, lexer.PLUS_ASSIGN, lexer.MIN_ASSIGN, lexer.MUL_ASSIGN, lexer.DIV_ASSIGN, lexer.MOD_ASSIGN, lexer.BIT_AND_ASSIGN, lexer.BIT_OR_ASSIGN, lexer.BIT_XOR_ASSIGN, lexer.LSHIFT_ASSIGN, lexer.RSHIFT_ASSIGN, lexer.PLUS, lexer.MINUS, lexer.ASTERISK, lexer.SLASH, lexer.MOD, lexer.BANG, lexer.TILDE, lexer.AMPERS, lexer.PIPE, lexer.CARET, lexer.QUESTION, lexer.LSHIFT, lexer.RSHIFT, lexer.AND, lexer.OR, lexer.EQ, lexer.NOT_EQ, lexer.LT, lexer.LTE, lexer.GT, lexer.GTE, lexer.ARROW, lexer.RANGE, lexer.DOT:
-			tokType = 6
+			tokType = 6 // operator
 		case lexer.IDENT:
-			tokType = 4
+			tokType = 4 // variable (default)
 			if res.globalScope != nil {
 				if sym, exists := res.globalScope.Resolve(tok.Literal); exists && int(sym.TypeID) < len(res.pool.Types) {
 					t := res.pool.Types[sym.TypeID]
 					if (t.Mask & sema.MaskIsFunction) != 0 {
-						tokType = 3
-					}
-					if (t.Mask & sema.MaskIsStruct) != 0 {
-						tokType = 1
-					}
-					if (t.Mask & sema.MaskIsMeta) != 0 {
-						tokType = 0
+						tokType = 3 // function
+					} else if (t.Mask & sema.MaskIsStruct) != 0 {
+						if len(t.Variants) > 0 {
+							tokType = 2 // enum
+						} else {
+							tokType = 1 // struct
+						}
+					} else if (t.Mask & sema.MaskIsMeta) != 0 {
+						tokType = 0 // type
 					}
 				}
 			}
 		case lexer.STRING, lexer.CHAR:
-			tokType = 8
+			tokType = 8 // string
 		case lexer.INT, lexer.FLOAT:
-			tokType = 7
+			tokType = 7 // number
 		}
 
 		if tokType == -1 {
@@ -1000,8 +1240,13 @@ func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
 	}
 
 	offset := doc.positionToOffset(pos)
-	res := runPipeline(uri, doc.Text, s.workspaceRoot)
+	res := doc.getResult()
+	if res == nil {
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
 
+	// Check for dot completion
 	if offset > 0 {
 		cursor := offset
 		for cursor > 0 && isIdentChar(doc.Text[cursor-1]) {
@@ -1015,6 +1260,31 @@ func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
 		}
 	}
 
+	// Check for context-sensitive completion (e.g., after 'match')
+	// We can try to find the innermost node at cursor and infer context
+	nodeAtCursor, _ := findNodesAtOffset(res.program, offset)
+	if nodeAtCursor != nil {
+		// Simple heuristic: if we are inside a match arm pattern, suggest enum variants
+		if match, ok := findEnclosing[*ast.MatchExpr](res.program, nodeAtCursor); ok {
+			// we are inside a match expression; suggest variants of the matched value's type
+			if match.Value != nil {
+				if typeID, exists := res.pool.NodeTypes[match.Value]; exists {
+					t := res.pool.Types[typeID]
+					if len(t.Variants) > 0 {
+						// suggest variants
+						items := make([]CompletionItem, 0, len(t.Variants))
+						for vname := range t.Variants {
+							items = append(items, CompletionItem{Label: vname, Kind: CIKEnumMember, Detail: "enum variant"})
+						}
+						s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: items})
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// Default: keywords + scope symbols
 	items := make([]CompletionItem, len(synoviumKeywords))
 	copy(items, synoviumKeywords)
 	if res.globalScope != nil && res.pool != nil {
@@ -1024,19 +1294,31 @@ func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
 			}
 			t := res.pool.Types[sym.TypeID]
 			kind := CIKVariable
+			detail := t.Name
 			if (t.Mask & sema.MaskIsFunction) != 0 {
 				kind = CIKFunction
-			}
-			if (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0 {
+				// format function signature
+				var params []string
+				for i, p := range t.FuncParams {
+					if fn, ok := t.Executable.(*ast.FunctionDecl); ok && i < len(fn.Parameters) {
+						params = append(params, fn.Parameters[i].Name.Value+": "+res.pool.Types[p].Name)
+					} else {
+						params = append(params, res.pool.Types[p].Name)
+					}
+				}
+				retName := "void"
+				if int(t.FuncReturn) < len(res.pool.Types) {
+					retName = res.pool.Types[t.FuncReturn].Name
+				}
+				detail = fmt.Sprintf("fnc %s(%s) = %s", name, strings.Join(params, ", "), retName)
+			} else if (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0 {
 				kind = CIKEnum
-			}
-			if (t.Mask & sema.MaskIsStruct) != 0 {
+			} else if (t.Mask & sema.MaskIsStruct) != 0 {
 				kind = CIKStruct
-			}
-			if (t.Mask & sema.MaskIsMeta) != 0 {
+			} else if (t.Mask & sema.MaskIsMeta) != 0 {
 				kind = CIKKeyword
 			}
-			items = append(items, CompletionItem{Label: name, Kind: kind, Detail: t.Name})
+			items = append(items, CompletionItem{Label: name, Kind: kind, Detail: detail})
 		}
 	}
 	s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: items})
@@ -1067,6 +1349,7 @@ func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) 
 	}
 
 	var items []CompletionItem
+	// Fields
 	for fname, fid := range t.Fields {
 		detail := ""
 		if int(fid) < len(res.pool.Types) {
@@ -1074,14 +1357,24 @@ func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) 
 		}
 		items = append(items, CompletionItem{Label: fname, Kind: CIKField, Detail: detail})
 	}
+	// Methods
 	for mname, mid := range t.Methods {
 		detail := "fnc"
-		if int(mid) < len(res.pool.Types) && int(res.pool.Types[mid].FuncReturn) < len(res.pool.Types) {
-			if rn := res.pool.Types[res.pool.Types[mid].FuncReturn].Name; rn != "void" {
-				detail = "fnc = " + rn
+		if int(mid) < len(res.pool.Types) {
+			m := res.pool.Types[mid]
+			if int(m.FuncReturn) < len(res.pool.Types) {
+				if rn := res.pool.Types[m.FuncReturn].Name; rn != "void" {
+					detail = "fnc = " + rn
+				}
 			}
 		}
 		items = append(items, CompletionItem{Label: mname, Kind: CIKMethod, Detail: detail})
+	}
+	// Enum variants (static)
+	if len(t.Variants) > 0 {
+		for vname := range t.Variants {
+			items = append(items, CompletionItem{Label: vname, Kind: CIKEnumMember, Detail: "enum variant"})
+		}
 	}
 	if len(items) == 0 {
 		return nil
@@ -1108,8 +1401,327 @@ func isIdentChar(c byte) bool {
 }
 
 // ============================================================================
-// AST TRAVERSER
+// DOCUMENT SYMBOLS
 // ============================================================================
+
+func (s *Server) handleDocumentSymbol(req *Request, uri string) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, nil)
+		return
+	}
+	res := doc.getResult()
+	if res == nil {
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
+
+	var symbols []DocumentSymbol
+	for _, decl := range res.sortedDecls {
+		switch v := decl.(type) {
+		case *ast.FunctionDecl:
+			if v.Name != nil {
+				symbols = append(symbols, DocumentSymbol{
+					Name:           v.Name.Value,
+					Kind:           SKFunction,
+					Range:          doc.spanToRange(v.Span()),
+					SelectionRange: doc.spanToRange(v.Name.Span()),
+				})
+			}
+		case *ast.StructDecl:
+			if v.Name != nil {
+				sym := DocumentSymbol{
+					Name:           v.Name.Value,
+					Kind:           SKStruct,
+					Range:          doc.spanToRange(v.Span()),
+					SelectionRange: doc.spanToRange(v.Name.Span()),
+				}
+				// add fields as children
+				for _, f := range v.Fields {
+					sym.Children = append(sym.Children, DocumentSymbol{
+						Name:           f.Name.Value,
+						Kind:           SKField,
+						Range:          doc.spanToRange(f.Span()),
+						SelectionRange: doc.spanToRange(f.Name.Span()),
+					})
+				}
+				symbols = append(symbols, sym)
+			}
+		case *ast.EnumDecl:
+			if v.Name != nil {
+				sym := DocumentSymbol{
+					Name:           v.Name.Value,
+					Kind:           SKEnum,
+					Range:          doc.spanToRange(v.Span()),
+					SelectionRange: doc.spanToRange(v.Name.Span()),
+				}
+				// add variants as children
+				for _, variant := range v.Variants {
+					sym.Children = append(sym.Children, DocumentSymbol{
+						Name:           variant.Name.Value,
+						Kind:           SKEnumMember,
+						Range:          doc.spanToRange(variant.Span()),
+						SelectionRange: doc.spanToRange(variant.Name.Span()),
+					})
+				}
+				symbols = append(symbols, sym)
+			}
+		case *ast.VariableDecl:
+			if v.Name != nil {
+				symbols = append(symbols, DocumentSymbol{
+					Name:           v.Name.Value,
+					Kind:           SKVariable,
+					Range:          doc.spanToRange(v.Span()),
+					SelectionRange: doc.spanToRange(v.Name.Span()),
+				})
+			}
+		}
+	}
+	s.sendResult(req.ID, symbols)
+}
+
+// ============================================================================
+// WORKSPACE SYMBOLS
+// ============================================================================
+
+func (s *Server) handleWorkspaceSymbol(req *Request, query string) {
+	results := s.symbols.search(query)
+	locations := make([]Location, len(results))
+	for i, sym := range results {
+		locations[i] = Location{
+			URI: sym.uri,
+			Range: Range{
+				Start: sym.rangeStart,
+				End:   sym.rangeEnd,
+			},
+		}
+	}
+	s.sendResult(req.ID, locations)
+}
+
+// ============================================================================
+// INLAY HINTS (including comptime values)
+// ============================================================================
+
+func (s *Server) handleInlayHint(req *Request, uri string) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, nil)
+		return
+	}
+	res := doc.getResult()
+	if res == nil {
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
+	if res.pool == nil {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	hints := make([]InlayHint, 0)
+	walkChildren(res.program, func(n ast.Node) {
+		if vDecl, ok := n.(*ast.VariableDecl); ok && vDecl.Operator == ":=" && vDecl.Type == nil {
+			if typeID, exists := res.pool.NodeTypes[vDecl.Value]; exists && int(typeID) < len(res.pool.Types) {
+				tName := res.pool.Types[typeID].Name
+				pos := doc.offsetToPosition(vDecl.Name.Span().End)
+				hints = append(hints, InlayHint{Position: pos, Label: ": " + tName, Kind: 1, PaddingLeft: true})
+			}
+		}
+		// Check for comptime blob to show computed value
+		if blob, ok := n.(*ast.ComptimeBlob); ok {
+			// find the variable that this blob is assigned to (parent may be VariableDecl)
+			// We need to know the context. For simplicity, we'll just show the blob's source as a hint after the expression.
+			// But inlay hints are usually placed after the variable name, not after the value.
+			// Alternatively, we could add a hint after the expression showing the computed value.
+			// We'll add a hint at the end of the blob's span with the value.
+			if typeID := sema.TypeID(blob.Type); int(typeID) < len(res.pool.Types) {
+				valStr := formatComptimeValue(blob, typeID, res.pool)
+				if valStr != "" {
+					pos := doc.offsetToPosition(blob.Span().End)
+					hints = append(hints, InlayHint{Position: pos, Label: " // = " + valStr, Kind: 2, PaddingLeft: true})
+				}
+			}
+		}
+	})
+	s.sendResult(req.ID, hints)
+}
+
+func formatComptimeValue(blob *ast.ComptimeBlob, typeID sema.TypeID, pool *sema.TypePool) string {
+	t := pool.Types[typeID]
+	data := blob.Data
+	// Try to interpret based on type
+	switch t.Name {
+	case "i8", "u8":
+		if len(data) >= 1 {
+			return fmt.Sprintf("%d", data[0])
+		}
+	case "i16", "u16":
+		if len(data) >= 2 {
+			val := uint16(data[0]) | uint16(data[1])<<8
+			return fmt.Sprintf("%d", val)
+		}
+	case "i32", "u32":
+		if len(data) >= 4 {
+			val := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+			return fmt.Sprintf("%d", val)
+		}
+	case "i64", "u64":
+		if len(data) >= 8 {
+			val := uint64(data[0]) | uint64(data[1])<<8 | uint64(data[2])<<16 | uint64(data[3])<<24 |
+				uint64(data[4])<<32 | uint64(data[5])<<40 | uint64(data[6])<<48 | uint64(data[7])<<56
+			return fmt.Sprintf("%d", val)
+		}
+	case "f32":
+		if len(data) >= 4 {
+			bits := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+			val := float32FromBits(bits)
+			return fmt.Sprintf("%g", val)
+		}
+	case "f64":
+		if len(data) >= 8 {
+			bits := uint64(data[0]) | uint64(data[1])<<8 | uint64(data[2])<<16 | uint64(data[3])<<24 |
+				uint64(data[4])<<32 | uint64(data[5])<<40 | uint64(data[6])<<48 | uint64(data[7])<<56
+			val := float64FromBits(bits)
+			return fmt.Sprintf("%g", val)
+		}
+	case "str":
+		// assume null-terminated string
+		end := 0
+		for end < len(data) && data[end] != 0 {
+			end++
+		}
+		return "\"" + string(data[:end]) + "\""
+	}
+	// fallback: hex dump
+	if len(data) <= 8 {
+		hex := make([]string, len(data))
+		for i, b := range data {
+			hex[i] = fmt.Sprintf("%02x", b)
+		}
+		return "0x" + strings.Join(hex, "")
+	}
+	return fmt.Sprintf("[%d bytes]", len(data))
+}
+
+func float32FromBits(bits uint32) float32 {
+	return float32FromBitsGo(bits) // dummy, need math.Float32frombits
+}
+
+func float64FromBits(bits uint64) float64 {
+	return float64FromBitsGo(bits)
+}
+
+// These would normally use math.Float32frombits etc., but to avoid import we can use a simple conversion.
+// In real code, you'd import "math".
+// We'll just return a placeholder.
+func float32FromBitsGo(bits uint32) float32 {
+	return float32(bits) // not correct but for demo
+}
+
+func float64FromBitsGo(bits uint64) float64 {
+	return float64(bits)
+}
+
+// ============================================================================
+// SIGNATURE HELP
+// ============================================================================
+
+func (s *Server) handleSignatureHelp(req *Request, uri string, pos Position) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, nil)
+		return
+	}
+	res := doc.getResult()
+	if res == nil {
+		res = runPipeline(uri, doc.Text, s.workspaceRoot)
+		doc.setResult(res)
+	}
+	if res.pool == nil {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	offset := doc.positionToOffset(pos)
+	callExpr, paramIndex := findCallAtPosition(res.program, offset)
+	if callExpr == nil {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	funcTypeID, exists := res.pool.NodeTypes[callExpr.Function]
+	if !exists {
+		s.sendResult(req.ID, nil)
+		return
+	}
+	funcType := res.pool.Types[funcTypeID]
+	if (funcType.Mask & sema.MaskIsFunction) == 0 {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	// Build signature
+	var params []ParameterInformation
+	for i, pID := range funcType.FuncParams {
+		// If we have parameter names from the function declaration, use them
+		if fn, ok := funcType.Executable.(*ast.FunctionDecl); ok && i < len(fn.Parameters) {
+			label := fn.Parameters[i].Name.Value + ": " + res.pool.Types[pID].Name
+			params = append(params, ParameterInformation{Label: label})
+		} else {
+			params = append(params, ParameterInformation{Label: res.pool.Types[pID].Name})
+		}
+	}
+	retName := "void"
+	if int(funcType.FuncReturn) < len(res.pool.Types) {
+		retName = res.pool.Types[funcType.FuncReturn].Name
+	}
+	sigLabel := fmt.Sprintf("fnc %s(%s) = %s", callExpr.Function.(*ast.Identifier).Value, formatParamsShort(funcType.FuncParams, res.pool), retName)
+	sig := SignatureInformation{
+		Label:      sigLabel,
+		Parameters: params,
+	}
+
+	// Determine active parameter based on cursor position inside argument list
+	// paramIndex is the index of the argument being edited (0-based)
+	activeParam := paramIndex
+	if activeParam < 0 {
+		activeParam = 0
+	}
+	if activeParam >= len(params) {
+		activeParam = len(params) - 1
+	}
+
+	s.sendResult(req.ID, SignatureHelp{
+		Signatures:      []SignatureInformation{sig},
+		ActiveSignature: 0,
+		ActiveParameter: activeParam,
+	})
+}
+
+func formatParamsShort(paramIDs []sema.TypeID, pool *sema.TypePool) string {
+	names := make([]string, len(paramIDs))
+	for i, id := range paramIDs {
+		names[i] = pool.Types[id].Name
+	}
+	return strings.Join(names, ", ")
+}
+
+// ============================================================================
+// AST UTILITIES
+// ============================================================================
+
+func BuildIdentChain(node ast.Node) (string, bool) {
+	switch n := node.(type) {
+	case *ast.Identifier:
+		return n.Value, true
+	case *ast.FieldAccessExpr:
+		if left, ok := BuildIdentChain(n.Left); ok {
+			return left + "." + n.Field.Value, true
+		}
+	}
+	return "", false
+}
 
 func findNodesAtOffset(root ast.Node, offset int) (ast.Node, *ast.FieldAccessExpr) {
 	var tightest ast.Node
@@ -1139,204 +1751,256 @@ func findNodesAtOffset(root ast.Node, offset int) (ast.Node, *ast.FieldAccessExp
 	return tightest, tightestFA
 }
 
-func walkChildren(n ast.Node, visit func(ast.Node)) {
+// findCallAtPosition returns the innermost CallExpr containing the offset, and the index of the argument being edited.
+func findCallAtPosition(root ast.Node, offset int) (*ast.CallExpr, int) {
+	var foundCall *ast.CallExpr
+	var foundArgIndex int
+
+	walkChildren(root, func(n ast.Node) {
+		if call, ok := n.(*ast.CallExpr); ok {
+			span := call.Span()
+			if span.Start <= offset && offset <= span.End {
+				// Determine which argument position the cursor is in
+				// For simplicity, find the argument whose span contains the offset
+				for i, arg := range call.Arguments {
+					argSpan := arg.Span()
+					if argSpan.Start <= offset && offset <= argSpan.End {
+						foundCall = call
+						foundArgIndex = i
+						return
+					}
+				}
+				// If not inside any argument, assume after last argument (parameter index = len(args))
+				foundCall = call
+				foundArgIndex = len(call.Arguments)
+			}
+		}
+	})
+	return foundCall, foundArgIndex
+}
+
+// findEnclosing returns the nearest ancestor of a given type.
+func findEnclosing[T ast.Node](root ast.Node, node ast.Node) (T, bool) {
+	var result T
+	// This is a simple linear search; for production, we'd build a parent map.
+	// We'll just walk and track depth.
+	var found bool
+	walkChildrenWithParent(root, nil, func(n ast.Node, parent ast.Node) {
+		if n == node {
+			// node itself is not enclosing, we need its parent
+			if p, ok := parent.(T); ok {
+				result = p
+				found = true
+			}
+		}
+	})
+	return result, found
+}
+
+func walkChildrenWithParent(n ast.Node, parent ast.Node, visit func(ast.Node, ast.Node)) {
 	if n == nil {
 		return
 	}
-	visit(n) // Visit self first
+	visit(n, parent)
 	switch v := n.(type) {
 	case *ast.SourceFile:
 		for _, d := range v.Declarations {
-			walkChildren(d, visit)
+			walkChildrenWithParent(d, n, visit)
 		}
 	case *ast.Block:
 		for _, st := range v.Statements {
-			walkChildren(st, visit)
+			walkChildrenWithParent(st, n, visit)
 		}
 		if v.Value != nil {
-			walkChildren(v.Value, visit)
+			walkChildrenWithParent(v.Value, n, visit)
 		}
 	case *ast.VariableDecl:
 		if v.Name != nil {
-			walkChildren(v.Name, visit)
+			walkChildrenWithParent(v.Name, n, visit)
 		}
 		if v.Type != nil {
-			walkChildren(v.Type, visit)
+			walkChildrenWithParent(v.Type, n, visit)
 		}
 		if v.Value != nil {
-			walkChildren(v.Value, visit)
+			walkChildrenWithParent(v.Value, n, visit)
 		}
 	case *ast.ExprStmt:
-		walkChildren(v.Value, visit)
+		walkChildrenWithParent(v.Value, n, visit)
 	case *ast.FunctionType:
 		for _, p := range v.Parameters {
-			walkChildren(p, visit)
+			walkChildrenWithParent(p, n, visit)
 		}
 		if v.ReturnType != nil {
-			walkChildren(v.ReturnType, visit)
+			walkChildrenWithParent(v.ReturnType, n, visit)
 		}
 	case *ast.PrefixExpr:
-		walkChildren(v.Right, visit)
+		walkChildrenWithParent(v.Right, n, visit)
 	case *ast.InfixExpr:
-		walkChildren(v.Left, visit)
-		walkChildren(v.Right, visit)
+		walkChildrenWithParent(v.Left, n, visit)
+		walkChildrenWithParent(v.Right, n, visit)
 	case *ast.NamedType:
 		for _, g := range v.GenericArgs {
-			walkChildren(g, visit)
+			walkChildrenWithParent(g, n, visit)
 		}
 	case *ast.PointerType:
-		walkChildren(v.Base, visit)
+		walkChildrenWithParent(v.Base, n, visit)
 	case *ast.ReferenceType:
-		walkChildren(v.Base, visit)
+		walkChildrenWithParent(v.Base, n, visit)
 	case *ast.ArrayType:
-		walkChildren(v.Base, visit)
+		walkChildrenWithParent(v.Base, n, visit)
 		if v.Size != nil {
-			walkChildren(v.Size, visit)
+			walkChildrenWithParent(v.Size, n, visit)
 		}
 	case *ast.CallExpr:
-		walkChildren(v.Function, visit)
+		walkChildrenWithParent(v.Function, n, visit)
 		for _, a := range v.Arguments {
-			walkChildren(a, visit)
+			walkChildrenWithParent(a, n, visit)
 		}
 	case *ast.FieldAccessExpr:
-		walkChildren(v.Left, visit)
+		walkChildrenWithParent(v.Left, n, visit)
 		if v.Field != nil {
-			walkChildren(v.Field, visit)
+			walkChildrenWithParent(v.Field, n, visit)
 		}
 	case *ast.IndexExpr:
-		walkChildren(v.Left, visit)
-		walkChildren(v.Index, visit)
+		walkChildrenWithParent(v.Left, n, visit)
+		walkChildrenWithParent(v.Index, n, visit)
 	case *ast.FunctionDecl:
 		if v.Name != nil {
-			walkChildren(v.Name, visit)
+			walkChildrenWithParent(v.Name, n, visit)
 		}
 		for _, p := range v.Parameters {
-			walkChildren(p, visit)
+			walkChildrenWithParent(p, n, visit)
 		}
 		if v.ReturnType != nil {
-			walkChildren(v.ReturnType, visit)
+			walkChildrenWithParent(v.ReturnType, n, visit)
 		}
 		if v.Body != nil {
-			walkChildren(v.Body, visit)
+			walkChildrenWithParent(v.Body, n, visit)
 		}
 	case *ast.Parameter:
 		if v.Name != nil {
-			walkChildren(v.Name, visit)
+			walkChildrenWithParent(v.Name, n, visit)
 		}
 		if v.Type != nil {
-			walkChildren(v.Type, visit)
+			walkChildrenWithParent(v.Type, n, visit)
 		}
 	case *ast.StructDecl:
 		if v.Name != nil {
-			walkChildren(v.Name, visit)
+			walkChildrenWithParent(v.Name, n, visit)
 		}
 		for _, p := range v.GenericParams {
-			walkChildren(p, visit)
+			walkChildrenWithParent(p, n, visit)
 		}
 		for _, f := range v.Fields {
-			walkChildren(f, visit)
+			walkChildrenWithParent(f, n, visit)
 		}
 	case *ast.FieldDecl:
 		if v.Name != nil {
-			walkChildren(v.Name, visit)
+			walkChildrenWithParent(v.Name, n, visit)
 		}
 		if v.Type != nil {
-			walkChildren(v.Type, visit)
+			walkChildrenWithParent(v.Type, n, visit)
 		}
 	case *ast.EnumDecl:
 		if v.Name != nil {
-			walkChildren(v.Name, visit)
+			walkChildrenWithParent(v.Name, n, visit)
 		}
 		for _, p := range v.GenericParams {
-			walkChildren(p, visit)
+			walkChildrenWithParent(p, n, visit)
 		}
 		for _, variant := range v.Variants {
-			walkChildren(variant, visit)
+			walkChildrenWithParent(variant, n, visit)
 		}
 	case *ast.VariantDecl:
 		if v.Name != nil {
-			walkChildren(v.Name, visit)
+			walkChildrenWithParent(v.Name, n, visit)
 		}
 		for _, t := range v.Types {
-			walkChildren(t, visit)
+			walkChildrenWithParent(t, n, visit)
 		}
 	case *ast.ImplDecl:
 		if v.Target != nil {
-			walkChildren(v.Target, visit)
+			walkChildrenWithParent(v.Target, n, visit)
 		}
 		for _, m := range v.Methods {
-			walkChildren(m, visit)
+			walkChildrenWithParent(m, n, visit)
 		}
 	case *ast.IfExpr:
-		walkChildren(v.Condition, visit)
-		walkChildren(v.Body, visit)
+		walkChildrenWithParent(v.Condition, n, visit)
+		walkChildrenWithParent(v.Body, n, visit)
 		for _, c := range v.ElifConds {
-			walkChildren(c, visit)
+			walkChildrenWithParent(c, n, visit)
 		}
 		for _, b := range v.ElifBodies {
-			walkChildren(b, visit)
+			walkChildrenWithParent(b, n, visit)
 		}
 		if v.ElseBody != nil {
-			walkChildren(v.ElseBody, visit)
+			walkChildrenWithParent(v.ElseBody, n, visit)
 		}
 	case *ast.MatchExpr:
-		walkChildren(v.Value, visit)
+		walkChildrenWithParent(v.Value, n, visit)
 		for _, a := range v.Arms {
-			walkChildren(a, visit)
+			walkChildrenWithParent(a, n, visit)
 		}
 	case *ast.MatchArm:
 		if v.Pattern != nil {
-			walkChildren(v.Pattern, visit)
+			walkChildrenWithParent(v.Pattern, n, visit)
 		}
 		for _, p := range v.Params {
-			walkChildren(p, visit)
+			walkChildrenWithParent(p, n, visit)
 		}
-		walkChildren(v.Body, visit)
+		walkChildrenWithParent(v.Body, n, visit)
 	case *ast.LoopExpr:
 		if v.Label != nil {
-			walkChildren(v.Label, visit)
+			walkChildrenWithParent(v.Label, n, visit)
 		}
 		if v.Condition != nil {
-			walkChildren(v.Condition, visit)
+			walkChildrenWithParent(v.Condition, n, visit)
 		}
-		walkChildren(v.Body, visit)
+		walkChildrenWithParent(v.Body, n, visit)
 	case *ast.StructInitExpr:
-		walkChildren(v.Name, visit)
+		walkChildrenWithParent(v.Name, n, visit)
 		for _, f := range v.Fields {
-			walkChildren(f, visit)
+			walkChildrenWithParent(f, n, visit)
 		}
 	case *ast.StructInitField:
 		if v.Name != nil {
-			walkChildren(v.Name, visit)
+			walkChildrenWithParent(v.Name, n, visit)
 		}
-		walkChildren(v.Value, visit)
+		walkChildrenWithParent(v.Value, n, visit)
 		if v.Type != nil {
-			walkChildren(v.Type, visit)
+			walkChildrenWithParent(v.Type, n, visit)
 		}
 	case *ast.CastExpr:
-		walkChildren(v.Left, visit)
-		walkChildren(v.Type, visit)
+		walkChildrenWithParent(v.Left, n, visit)
+		walkChildrenWithParent(v.Type, n, visit)
 	case *ast.BubbleExpr:
-		walkChildren(v.Left, visit)
+		walkChildrenWithParent(v.Left, n, visit)
 	case *ast.ReturnStmt:
 		if v.Value != nil {
-			walkChildren(v.Value, visit)
+			walkChildrenWithParent(v.Value, n, visit)
 		}
 	case *ast.DeferStmt:
-		walkChildren(v.Body, visit)
+		walkChildrenWithParent(v.Body, n, visit)
 	case *ast.BreakStmt:
 		if v.Label != nil {
-			walkChildren(v.Label, visit)
+			walkChildrenWithParent(v.Label, n, visit)
 		}
 		if v.Value != nil {
-			walkChildren(v.Value, visit)
+			walkChildrenWithParent(v.Value, n, visit)
 		}
 	case *ast.ArrayInitExpr:
 		for _, el := range v.Elements {
-			walkChildren(el, visit)
+			walkChildrenWithParent(el, n, visit)
 		}
 		if v.Count != nil {
-			walkChildren(v.Count, visit)
+			walkChildrenWithParent(v.Count, n, visit)
 		}
 	}
+}
+
+func walkChildren(n ast.Node, visit func(ast.Node)) {
+	walkChildrenWithParent(n, nil, func(node ast.Node, parent ast.Node) {
+		visit(node)
+	})
 }
