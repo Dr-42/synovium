@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -14,19 +15,16 @@ import (
 	"sync"
 
 	"synovium/ast"
+	"synovium/codegen"
 	"synovium/lexer"
 	"synovium/parser"
 	"synovium/sema"
 )
 
-// ============================================================================
-// REGEX
-// ============================================================================
-
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // ============================================================================
-// JSON-RPC TRANSPORT TYPES
+// JSON-RPC & LSP TYPES
 // ============================================================================
 
 type Request struct {
@@ -49,10 +47,6 @@ type Notification struct {
 	Params interface{} `json:"params"`
 }
 
-// ============================================================================
-// LSP PROTOCOL TYPES
-// ============================================================================
-
 type Position struct {
 	Line      int `json:"line"`
 	Character int `json:"character"`
@@ -68,23 +62,11 @@ type Location struct {
 	Range Range  `json:"range"`
 }
 
-const (
-	SeverityError       = 1
-	SeverityWarning     = 2
-	SeverityInformation = 3
-	SeverityHint        = 4
-)
-
 type Diagnostic struct {
 	Range    Range  `json:"range"`
 	Severity int    `json:"severity"`
 	Source   string `json:"source"`
 	Message  string `json:"message"`
-}
-
-type PublishDiagnosticsParams struct {
-	URI         string       `json:"uri"`
-	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
 type HoverResult struct {
@@ -96,18 +78,6 @@ type MarkupContent struct {
 	Kind  string `json:"kind"`
 	Value string `json:"value"`
 }
-
-const (
-	CIKText       = 1
-	CIKMethod     = 2
-	CIKFunction   = 3
-	CIKField      = 5
-	CIKVariable   = 6
-	CIKKeyword    = 14
-	CIKEnum       = 13
-	CIKEnumMember = 20
-	CIKStruct     = 22
-)
 
 type CompletionItem struct {
 	Label            string `json:"label"`
@@ -122,71 +92,65 @@ type CompletionList struct {
 	Items        []CompletionItem `json:"items"`
 }
 
+type DocumentSymbol struct {
+	Name           string           `json:"name"`
+	Detail         string           `json:"detail,omitempty"`
+	Kind           int              `json:"kind"`
+	Range          Range            `json:"range"`
+	SelectionRange Range            `json:"selectionRange"`
+	Children       []DocumentSymbol `json:"children,omitempty"`
+}
+
+type InlayHint struct {
+	Position    Position `json:"position"`
+	Label       string   `json:"label"`
+	Kind        int      `json:"kind"`
+	PaddingLeft bool     `json:"paddingLeft"`
+}
+
+const (
+	CIKMethod     = 2
+	CIKFunction   = 3
+	CIKField      = 5
+	CIKVariable   = 6
+	CIKEnum       = 13
+	CIKKeyword    = 14
+	CIKEnumMember = 20
+	CIKStruct     = 22
+	SKFunction    = 12
+	SKVariable    = 13
+	SKStruct      = 23
+	SKEnum        = 10
+)
+
 // ============================================================================
-// DOCUMENT STORE (O(log N) Indexed)
+// DOCUMENT STORE
 // ============================================================================
 
 type Document struct {
 	Text        string
-	LineOffsets []int // Caches the byte offset of the start of each line
+	LineOffsets []int
 }
 
-type docStore struct {
-	mu   sync.RWMutex
-	docs map[string]*Document
-}
-
-func newDocStore() *docStore {
-	return &docStore{docs: make(map[string]*Document)}
-}
-
-func (d *docStore) set(uri, text string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Precompute line offsets for O(log N) positional lookups
+func newDocument(uri, text string) *Document {
 	offsets := []int{0}
 	for i := 0; i < len(text); i++ {
 		if text[i] == '\n' {
 			offsets = append(offsets, i+1)
 		}
 	}
-
-	d.docs[uri] = &Document{
-		Text:        text,
-		LineOffsets: offsets,
-	}
-}
-
-func (d *docStore) get(uri string) (*Document, bool) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	doc, ok := d.docs[uri]
-	return doc, ok
-}
-
-func (d *docStore) del(uri string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	delete(d.docs, uri)
+	return &Document{Text: text, LineOffsets: offsets}
 }
 
 func (doc *Document) offsetToPosition(offset int) Position {
 	if offset < 0 {
 		return Position{Line: 0, Character: 0}
 	}
-
-	// Binary search for the line
-	line := sort.Search(len(doc.LineOffsets), func(i int) bool {
-		return doc.LineOffsets[i] > offset
-	}) - 1
-
+	line := sort.Search(len(doc.LineOffsets), func(i int) bool { return doc.LineOffsets[i] > offset }) - 1
 	if line < 0 {
 		line = 0
 	}
-
-	char := offset - doc.LineOffsets[line]
-	return Position{Line: line, Character: char}
+	return Position{Line: line, Character: offset - doc.LineOffsets[line]}
 }
 
 func (doc *Document) positionToOffset(pos Position) int {
@@ -201,34 +165,58 @@ func (doc *Document) positionToOffset(pos Position) int {
 }
 
 func (doc *Document) spanToRange(span lexer.Span) Range {
-	return Range{
-		Start: doc.offsetToPosition(span.Start),
-		End:   doc.offsetToPosition(span.End),
-	}
+	return Range{Start: doc.offsetToPosition(span.Start), End: doc.offsetToPosition(span.End)}
+}
+
+type docStore struct {
+	mu   sync.RWMutex
+	docs map[string]*Document
+}
+
+func newDocStore() *docStore { return &docStore{docs: make(map[string]*Document)} }
+
+func (d *docStore) set(uri, text string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.docs[uri] = newDocument(uri, text)
+}
+
+func (d *docStore) get(uri string) (*Document, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	doc, ok := d.docs[uri]
+	return doc, ok
 }
 
 // ============================================================================
-// PIPELINE
+// SERVER PIPELINE
 // ============================================================================
 
 type pipelineResult struct {
+	program     *ast.SourceFile
 	pool        *sema.TypePool
 	globalScope *sema.Scope
 	sortedDecls []ast.Decl
 	parseErrors []string
 	semaErrors  []string
-	tokens      []lexer.Token // Needed for Semantic Highlighting
+	tokens      []lexer.Token
+	nodeURIs    map[ast.Node]string
 }
 
-func runPipeline(code string) *pipelineResult {
-	res := &pipelineResult{}
+func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
+	res := &pipelineResult{
+		nodeURIs: make(map[ast.Node]string),
+	}
 
 	l := lexer.New(code)
 	p := parser.New(l)
-	program := p.ParseSourceFile()
+	res.program = p.ParseSourceFile()
 	res.parseErrors = p.Errors()
 
-	// Re-lex to save tokens for semantic highlighting
+	for _, d := range res.program.Declarations {
+		res.nodeURIs[d] = uri
+	}
+
 	l2 := lexer.New(code)
 	for {
 		tok := l2.NextToken()
@@ -238,124 +226,102 @@ func runPipeline(code string) *pipelineResult {
 		}
 	}
 
-	pool := sema.NewTypePool()
-	globalScope := sema.NewScope(nil)
-	evaluator := sema.NewEvaluator(pool, code)
-	evaluator.GlobalDecls = program.Declarations
+	res.pool = sema.NewTypePool()
+	res.globalScope = sema.NewScope(nil)
+	evaluator := sema.NewEvaluator(res.pool, code)
+	evaluator.GlobalDecls = res.program.Declarations
 
-	evaluator.JITCallback = func(
-		expr ast.Expr, targetType sema.TypeID, pool *sema.TypePool,
-		envScope *sema.Scope, globalDecls []ast.Decl,
-	) ([]byte, error) {
-		size := pool.Types[targetType].TrueSizeBits / 8
-		if size == 0 {
-			size = 1
-		}
-		return make([]byte, size), nil
-	}
+	evaluator.JITCallback = codegen.RunJIT
+	evaluator.InjectBuiltins(res.globalScope)
 
-	evaluator.InjectBuiltins(globalScope)
-
-	dag := sema.NewDAG(globalScope)
-
+	dag := sema.NewDAG(res.globalScope)
 	loadedFiles := make(map[string]bool)
+
+	// THE FIX: Smart Context-Aware Path Resolution
+	baseDir := filepath.Dir(strings.TrimPrefix(uri, "file://"))
+
 	dag.ParseModule = func(modulePath string) ([]ast.Decl, error) {
 		parts := strings.Split(modulePath, ".")
-
 		for i := len(parts); i > 0; i-- {
-			filename := strings.Join(parts[:i], string(os.PathSeparator)) + ".syn"
+			relPath := strings.Join(parts[:i], string(os.PathSeparator)) + ".syn"
 
-			if _, err := os.Stat(filename); err == nil {
-				if loadedFiles[filename] {
-					return nil, nil // Already in the DAG queue!
-				}
-				loadedFiles[filename] = true
+			// Build fallback search paths
+			pathsToTry := []string{filepath.Join(baseDir, relPath)}
+			if workspaceRoot != "" {
+				pathsToTry = append(pathsToTry, filepath.Join(workspaceRoot, relPath))
+			}
+			pathsToTry = append(pathsToTry, relPath)
 
-				content, err := os.ReadFile(filename)
-				if err != nil {
-					return nil, err
-				}
+			for _, checkPath := range pathsToTry {
+				if _, err := os.Stat(checkPath); err == nil {
+					if loadedFiles[checkPath] {
+						return nil, nil
+					}
+					loadedFiles[checkPath] = true
 
-				l := lexer.New(string(content))
-				p := parser.New(l)
-				prog := p.ParseSourceFile()
+					content, err := os.ReadFile(checkPath)
+					if err != nil {
+						return nil, err
+					}
 
-				if len(p.Errors()) > 0 {
-					return nil, fmt.Errorf("parse errors in module '%s'", filename)
-				}
+					l := lexer.New(string(content))
+					p := parser.New(l)
+					prog := p.ParseSourceFile()
 
-				// ACT 2: AST Module Prefix Injection
-				modulePrefix := strings.Join(parts[:i], ".")
-				for _, decl := range prog.Declarations {
-					switch v := decl.(type) {
-					case *ast.StructDecl:
-						v.Name.Value = modulePrefix + "." + v.Name.Value
-					case *ast.EnumDecl:
-						v.Name.Value = modulePrefix + "." + v.Name.Value
-					case *ast.FunctionDecl:
-						if v.Name != nil {
+					absPath, _ := filepath.Abs(checkPath)
+					extURI := "file://" + absPath
+
+					modulePrefix := strings.Join(parts[:i], ".")
+					for _, decl := range prog.Declarations {
+						res.nodeURIs[decl] = extURI // Map node to exact origin file
+						switch v := decl.(type) {
+						case *ast.StructDecl:
 							v.Name.Value = modulePrefix + "." + v.Name.Value
-						}
-					case *ast.VariableDecl:
-						v.Name.Value = modulePrefix + "." + v.Name.Value
-					case *ast.ImplDecl:
-						if !strings.Contains(v.Target.Value, ".") {
-							v.Target.Value = modulePrefix + "." + v.Target.Value
+						case *ast.EnumDecl:
+							v.Name.Value = modulePrefix + "." + v.Name.Value
+						case *ast.FunctionDecl:
+							if v.Name != nil {
+								v.Name.Value = modulePrefix + "." + v.Name.Value
+							}
+						case *ast.VariableDecl:
+							v.Name.Value = modulePrefix + "." + v.Name.Value
+						case *ast.ImplDecl:
+							if !strings.Contains(v.Target.Value, ".") {
+								v.Target.Value = modulePrefix + "." + v.Target.Value
+							}
 						}
 					}
+					return prog.Declarations, nil
 				}
-				return prog.Declarations, nil
 			}
 		}
 		return nil, nil
 	}
 
-	sortedDecls, err := dag.BuildAndSort(program)
+	sortedDecls, err := dag.BuildAndSort(res.program)
 	if err != nil {
 		res.semaErrors = append(res.semaErrors, err.Error())
-		res.pool = pool
-		res.globalScope = globalScope
 		return res
 	}
 
 	for _, decl := range sortedDecls {
-		evaluator.Evaluate(decl, globalScope)
+		evaluator.Evaluate(decl, res.globalScope)
 	}
 
-	res.pool = pool
-	res.globalScope = globalScope
 	res.sortedDecls = sortedDecls
 	res.semaErrors = evaluator.Errors
 	return res
 }
 
-var synoviumKeywords = []CompletionItem{
-	{Label: "fnc", Kind: CIKKeyword, InsertText: "fnc ${1:name}(${2:params}) = ${3:ret} {\n\t$0\n}", InsertTextFormat: 2},
-	{Label: "struct", Kind: CIKKeyword, InsertText: "struct ${1:Name} {\n\t${2:field}: ${3:type}\n}", InsertTextFormat: 2},
-	{Label: "enum", Kind: CIKKeyword, InsertText: "enum ${1:Name} {\n\t${2:Variant}\n}", InsertTextFormat: 2},
-	{Label: "impl", Kind: CIKKeyword, InsertText: "impl ${1:Type} {\n\t$0\n}", InsertTextFormat: 2},
-	{Label: "if", Kind: CIKKeyword, InsertText: "if ${1:cond} {\n\t$0\n}", InsertTextFormat: 2},
-	{Label: "elif", Kind: CIKKeyword, InsertText: "elif ${1:cond} {\n\t$0\n}", InsertTextFormat: 2},
-	{Label: "else", Kind: CIKKeyword, InsertText: "else {\n\t$0\n}", InsertTextFormat: 2},
-	{Label: "loop", Kind: CIKKeyword, InsertText: "loop(${1:i}: ${2:i32} = ${3:0}...${4:n}) {\n\t$0\n}", InsertTextFormat: 2},
-	{Label: "match", Kind: CIKKeyword, InsertText: "match ${1:val} {\n\t${2:Variant}(${3:v}) -> { $0 }\n}", InsertTextFormat: 2},
-	{Label: "ret", Kind: CIKKeyword, InsertTextFormat: 1},
-	{Label: "defer", Kind: CIKKeyword, InsertText: "defer { $0 }", InsertTextFormat: 2},
-}
-
-func isIdentChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-		(c >= '0' && c <= '9') || c == '_'
-}
-
 // ============================================================================
-// SERVER
+// SERVER CORE
 // ============================================================================
 
 type Server struct {
-	docs   *docStore
-	writer *bufio.Writer
-	logger *log.Logger
+	docs          *docStore
+	writer        *bufio.Writer
+	logger        *log.Logger
+	workspaceRoot string
 }
 
 func Start() {
@@ -372,13 +338,12 @@ func Start() {
 		logger: log.New(logFile, "[SYN-LSP] ", log.Ltime|log.Lshortfile),
 	}
 
-	s.logger.Println("Synovium Language Server booting…")
+	s.logger.Println("Synovium Language Server (Production) booting…")
 	s.run()
 }
 
 func (s *Server) run() {
 	reader := bufio.NewReader(os.Stdin)
-
 	for {
 		contentLength := -1
 		for {
@@ -391,26 +356,19 @@ func (s *Server) run() {
 				break
 			}
 			if strings.HasPrefix(line, "Content-Length:") {
-				lenStr := strings.TrimSpace(strings.TrimPrefix(line, "Content-Length:"))
-				contentLength, _ = strconv.Atoi(lenStr)
+				contentLength, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "Content-Length:")))
 			}
 		}
-
 		if contentLength <= 0 {
 			continue
 		}
-
 		body := make([]byte, contentLength)
 		if _, err := io.ReadFull(reader, body); err != nil {
 			return
 		}
 
 		var req Request
-		if err := json.Unmarshal(body, &req); err != nil {
-			continue
-		}
-
-		s.logger.Printf("← %s", req.Method)
+		json.Unmarshal(body, &req)
 		s.dispatch(&req)
 	}
 }
@@ -418,6 +376,13 @@ func (s *Server) run() {
 func (s *Server) dispatch(req *Request) {
 	switch req.Method {
 	case "initialize":
+		var p struct {
+			RootUri string `json:"rootUri"`
+		}
+		json.Unmarshal(req.Params, &p)
+		if p.RootUri != "" {
+			s.workspaceRoot = strings.TrimPrefix(p.RootUri, "file://")
+		}
 		s.handleInitialize(req)
 	case "initialized", "shutdown":
 		if req.ID != nil {
@@ -453,16 +418,6 @@ func (s *Server) dispatch(req *Request) {
 			go s.publishDiagnostics(p.TextDocument.URI, text)
 		}
 
-	case "textDocument/didClose":
-		var p struct {
-			TextDocument struct {
-				URI string `json:"uri"`
-			} `json:"textDocument"`
-		}
-		json.Unmarshal(req.Params, &p)
-		s.docs.del(p.TextDocument.URI)
-		go s.sendDiagnostics(p.TextDocument.URI, []Diagnostic{})
-
 	case "textDocument/hover":
 		var p struct {
 			TextDocument struct {
@@ -483,6 +438,16 @@ func (s *Server) dispatch(req *Request) {
 		json.Unmarshal(req.Params, &p)
 		s.handleDefinition(req, p.TextDocument.URI, p.Position)
 
+	case "textDocument/implementation":
+		var p struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
+			Position Position `json:"position"`
+		}
+		json.Unmarshal(req.Params, &p)
+		s.handleImplementation(req, p.TextDocument.URI, p.Position)
+
 	case "textDocument/semanticTokens/full":
 		var p struct {
 			TextDocument struct {
@@ -502,10 +467,26 @@ func (s *Server) dispatch(req *Request) {
 		json.Unmarshal(req.Params, &p)
 		s.handleCompletion(req, p.TextDocument.URI, p.Position)
 
-	default:
-		if req.ID != nil {
-			s.sendError(req.ID, -32601, "method not found: "+req.Method)
+	case "textDocument/documentSymbol":
+		var p struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
 		}
+		json.Unmarshal(req.Params, &p)
+		s.handleDocumentSymbol(req, p.TextDocument.URI)
+
+	case "workspace/symbol":
+		s.sendResult(req.ID, []Location{})
+
+	case "textDocument/inlayHint":
+		var p struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
+		}
+		json.Unmarshal(req.Params, &p)
+		s.handleInlayHint(req, p.TextDocument.URI)
 	}
 }
 
@@ -520,50 +501,36 @@ func (s *Server) sendResult(id *json.RawMessage, result interface{}) {
 	s.sendRaw(Response{RPC: "2.0", ID: id, Result: result})
 }
 
-func (s *Server) sendError(id *json.RawMessage, code int, msg string) {
-	s.sendRaw(map[string]interface{}{"jsonrpc": "2.0", "id": id, "error": map[string]interface{}{"code": code, "message": msg}})
-}
-
-func (s *Server) sendDiagnostics(uri string, diagnostics []Diagnostic) {
-	if diagnostics == nil {
-		diagnostics = []Diagnostic{}
-	}
-	s.sendRaw(Notification{
-		RPC:    "2.0",
-		Method: "textDocument/publishDiagnostics",
-		Params: PublishDiagnosticsParams{URI: uri, Diagnostics: diagnostics},
-	})
-}
-
 func (s *Server) handleInitialize(req *Request) {
 	s.sendResult(req.ID, map[string]interface{}{
 		"capabilities": map[string]interface{}{
-			"textDocumentSync":   map[string]interface{}{"openClose": true, "change": 1},
-			"hoverProvider":      true,
-			"definitionProvider": true, // GOTO DEFINITION
-			"semanticTokensProvider": map[string]interface{}{ // SEMANTIC TOKENS
+			"textDocumentSync":        map[string]interface{}{"openClose": true, "change": 1},
+			"hoverProvider":           true,
+			"definitionProvider":      true,
+			"implementationProvider":  true,
+			"documentSymbolProvider":  true,
+			"workspaceSymbolProvider": true,
+			"inlayHintProvider":       map[string]interface{}{"resolveProvider": false},
+			"semanticTokensProvider": map[string]interface{}{
 				"legend": map[string]interface{}{
 					"tokenTypes":     []string{"type", "struct", "enum", "function", "variable", "keyword", "operator", "number", "string"},
 					"tokenModifiers": []string{"declaration"},
 				},
 				"full": true,
 			},
-			"completionProvider": map[string]interface{}{
-				"triggerCharacters": []string{".", ":"},
-				"resolveProvider":   false,
-			},
+			"completionProvider": map[string]interface{}{"triggerCharacters": []string{".", ":"}},
 		},
 	})
 }
 
 // ============================================================================
-// DIAGNOSTICS & PARSING
+// DIAGNOSTICS
 // ============================================================================
 
 func (s *Server) publishDiagnostics(uri, code string) {
-	//doc, _ := s.docs.get(uri)
-	var diagnostics []Diagnostic
-	res := runPipeline(code)
+	// THE FIX: explicitly allocate empty slice to prevent Lua 'null' panics
+	diagnostics := make([]Diagnostic, 0)
+	res := runPipeline(uri, code, s.workspaceRoot)
 
 	for _, msg := range res.parseErrors {
 		clean := ansiRegex.ReplaceAllString(msg, "")
@@ -582,17 +549,13 @@ func (s *Server) publishDiagnostics(uri, code string) {
 				}
 			}
 		}
-		diagnostics = append(diagnostics, Diagnostic{
-			Range:    Range{Start: Position{line, 0}, End: Position{line, 9999}},
-			Severity: SeverityError, Source: "synovium(parse)", Message: "Syntax Error: " + clean,
-		})
+		diagnostics = append(diagnostics, Diagnostic{Range: Range{Start: Position{line, 0}, End: Position{line, 9999}}, Severity: 1, Source: "synovium", Message: "Syntax Error: " + clean})
 	}
-
 	for _, msg := range res.semaErrors {
 		diagnostics = append(diagnostics, parseSemaError(msg))
 	}
 
-	s.sendDiagnostics(uri, diagnostics)
+	s.sendRaw(Notification{RPC: "2.0", Method: "textDocument/publishDiagnostics", Params: map[string]interface{}{"uri": uri, "diagnostics": diagnostics}})
 }
 
 func parseSemaError(raw string) Diagnostic {
@@ -607,8 +570,7 @@ func parseSemaError(raw string) Diagnostic {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "--> line ") {
-			coords := strings.TrimPrefix(trimmed, "--> line ")
-			fmt.Sscanf(coords, "%d:%d", &diagLine, &diagCol)
+			fmt.Sscanf(strings.TrimPrefix(trimmed, "--> line "), "%d:%d", &diagLine, &diagCol)
 			diagLine--
 			diagCol--
 			if diagLine < 0 {
@@ -624,33 +586,47 @@ func parseSemaError(raw string) Diagnostic {
 			if idx := strings.Index(after, "| "); idx != -1 {
 				after = after[idx+2:]
 			}
-			carets := strings.TrimLeft(after, " \t")
-			count := 0
-			for _, ch := range carets {
+			for _, ch := range strings.TrimLeft(after, " \t") {
 				if ch == '^' {
-					count++
+					squigglyLen++
 				} else {
 					break
 				}
-			}
-			if count > 0 {
-				squigglyLen = count
 			}
 		}
 	}
 	if message == "" {
 		message = strings.TrimSpace(clean)
 	}
-
-	return Diagnostic{
-		Range:    Range{Start: Position{diagLine, diagCol}, End: Position{diagLine, diagCol + squigglyLen}},
-		Severity: SeverityError, Source: "synovium", Message: message,
-	}
+	return Diagnostic{Range: Range{Start: Position{diagLine, diagCol}, End: Position{diagLine, diagCol + squigglyLen}}, Severity: 1, Source: "synovium", Message: message}
 }
 
 // ============================================================================
-// DEFINITION & HOVER
+// DEFINITION & HOVER & IMPLEMENTATION
 // ============================================================================
+
+// BuildIdentChain extracts full nested chains (math.linal.mat.Matrix)
+func BuildIdentChain(node ast.Node) (string, bool) {
+	switch n := node.(type) {
+	case *ast.Identifier:
+		return n.Value, true
+	case *ast.FieldAccessExpr:
+		if left, ok := BuildIdentChain(n.Left); ok {
+			return left + "." + n.Field.Value, true
+		}
+	}
+	return "", false
+}
+
+// resolveAliasNode tunnels through types to find the actual Struct/Func declarations
+func resolveAliasNode(sym *sema.Symbol, pool *sema.TypePool) ast.Node {
+	if int(sym.TypeID) > 0 && int(sym.TypeID) < len(pool.Types) {
+		if exec := pool.Types[sym.TypeID].Executable; exec != nil {
+			return exec
+		}
+	}
+	return sym.DeclNode
+}
 
 func (s *Server) handleDefinition(req *Request, uri string, pos Position) {
 	doc, ok := s.docs.get(uri)
@@ -658,89 +634,71 @@ func (s *Server) handleDefinition(req *Request, uri string, pos Position) {
 		s.sendResult(req.ID, nil)
 		return
 	}
-
-	res := runPipeline(doc.Text)
+	res := runPipeline(uri, doc.Text, s.workspaceRoot)
 	if res.pool == nil {
 		s.sendResult(req.ID, nil)
 		return
 	}
 
 	offset := doc.positionToOffset(pos)
-	node, _ := findNodeAtOffset(res.pool, offset)
+	node, faNode := findNodesAtOffset(res.program, offset)
 
-	if ident, ok := node.(*ast.Identifier); ok {
-		// 1. Scope Resolution: Try local scope first, fallback to global
-		scope := res.globalScope
-		if localScope, ok := res.pool.NodeScopes[ident]; ok && localScope != nil {
-			scope = localScope
-		}
-
-		if sym, exists := scope.Resolve(ident.Value); exists && sym.DeclNode != nil {
-			targetURI := uri
-			targetDoc := doc
-
-			// 2. Cross-File Magic: If the symbol name is a module path (e.g., math.linal.vec.Vec2),
-			// we reverse-engineer the file path directly from the identifier!
-			if strings.Contains(sym.Name, ".") {
-				parts := strings.Split(sym.Name, ".")
-				for i := len(parts); i > 0; i-- {
-					relPath := strings.Join(parts[:i], string(os.PathSeparator)) + ".syn"
-					if content, err := os.ReadFile(relPath); err == nil {
-						// Found the external file! Convert to an absolute file:// URI
-						cwd, _ := os.Getwd()
-						targetURI = "file://" + cwd + string(os.PathSeparator) + relPath
-						targetDoc = newDocument(targetURI, string(content))
-						break
-					}
-				}
+	bestScope := res.globalScope
+	bestScopeLen := -1
+	for n, sc := range res.pool.NodeScopes {
+		span := n.Span()
+		if span.Start <= offset && offset <= span.End {
+			if l := span.End - span.Start; bestScopeLen == -1 || l < bestScopeLen {
+				bestScope = sc
+				bestScopeLen = l
 			}
-
-			// Safely grab the span using a panic-recovery wrapper
-			var targetSpan lexer.Span
-			func() {
-				defer func() { recover() }() // Catch any AST nil pointers
-				targetSpan = sym.DeclNode.Span()
-			}()
-
-			// 3. Jump!
-			s.sendResult(req.ID, Location{
-				URI:   targetURI,
-				Range: targetDoc.spanToRange(targetSpan),
-			})
-			return
 		}
+	}
+
+	var targetNode ast.Node
+
+	// 1. Module Path Resolution (e.g. math.linal.mat.Matrix)
+	if faNode != nil {
+		if chain, ok := BuildIdentChain(faNode); ok {
+			if sym, exists := bestScope.Resolve(chain); exists && sym.DeclNode != nil {
+				targetNode = resolveAliasNode(sym, res.pool)
+			}
+		}
+	}
+
+	// 2. Standard Identifier / NamedType Resolution
+	if targetNode == nil {
+		if ident, ok := node.(*ast.Identifier); ok {
+			if sym, exists := bestScope.Resolve(ident.Value); exists && sym.DeclNode != nil {
+				targetNode = resolveAliasNode(sym, res.pool)
+			}
+		} else if named, ok := node.(*ast.NamedType); ok {
+			if sym, exists := bestScope.Resolve(named.Name); exists && sym.DeclNode != nil {
+				targetNode = resolveAliasNode(sym, res.pool)
+			}
+		}
+	}
+
+	// 3. Complete the Jump
+	if targetNode != nil {
+		targetURI := uri
+		targetDoc := doc
+
+		if mappedURI, ok := res.nodeURIs[targetNode]; ok {
+			targetURI = mappedURI
+		}
+
+		if targetURI != uri {
+			path := strings.TrimPrefix(targetURI, "file://")
+			if content, err := os.ReadFile(path); err == nil {
+				targetDoc = newDocument(targetURI, string(content))
+			}
+		}
+
+		s.sendResult(req.ID, Location{URI: targetURI, Range: targetDoc.spanToRange(targetNode.Span())})
+		return
 	}
 	s.sendResult(req.ID, nil)
-}
-
-func findNodeAtOffset(pool *sema.TypePool, offset int) (ast.Node, sema.TypeID) {
-	var bestNode ast.Node
-	bestLen := -1
-	var bestID sema.TypeID
-
-	for node, typeID := range pool.NodeTypes {
-		if node == nil {
-			continue
-		}
-
-		// THE FIX: An Indestructible Panic Recovery Wrapper
-		// While typing, the AST is often malformed. If asking a node for its Span()
-		// triggers a nil pointer (like an empty Block), we catch it and ignore the node
-		// instead of crashing the entire Language Server.
-		func() {
-			defer func() { recover() }()
-
-			span := node.Span()
-			if span.Start < 0 || span.End < span.Start || offset < span.Start || offset > span.End {
-				return
-			}
-			spanLen := span.End - span.Start
-			if bestLen == -1 || spanLen < bestLen {
-				bestNode, bestLen, bestID = node, spanLen, typeID
-			}
-		}()
-	}
-	return bestNode, bestID
 }
 
 func (s *Server) handleHover(req *Request, uri string, pos Position) {
@@ -749,56 +707,108 @@ func (s *Server) handleHover(req *Request, uri string, pos Position) {
 		s.sendResult(req.ID, nil)
 		return
 	}
-
-	res := runPipeline(doc.Text)
+	res := runPipeline(uri, doc.Text, s.workspaceRoot)
 	if res.pool == nil {
 		s.sendResult(req.ID, nil)
 		return
 	}
 
 	offset := doc.positionToOffset(pos)
-	node, typeID := findNodeAtOffset(res.pool, offset)
-	if node == nil {
+	node, faNode := findNodesAtOffset(res.program, offset)
+	if node == nil && faNode == nil {
 		s.sendResult(req.ID, nil)
 		return
 	}
 
-	t := res.pool.Types[typeID]
-	md := formatTypeMarkdown(t, res.pool)
-	hoverRange := doc.spanToRange(node.Span())
+	bestScope := res.globalScope
+	bestScopeLen := -1
+	for n, sc := range res.pool.NodeScopes {
+		span := n.Span()
+		if span.Start <= offset && offset <= span.End {
+			if l := span.End - span.Start; bestScopeLen == -1 || l < bestScopeLen {
+				bestScope = sc
+				bestScopeLen = l
+			}
+		}
+	}
 
-	s.sendResult(req.ID, HoverResult{
-		Contents: MarkupContent{Kind: "markdown", Value: md},
-		Range:    &hoverRange,
-	})
+	var typeID sema.TypeID
+
+	if faNode != nil {
+		if tID, exists := res.pool.NodeTypes[faNode]; exists {
+			typeID = tID
+		} else if chain, ok := BuildIdentChain(faNode); ok {
+			if sym, exists := bestScope.Resolve(chain); exists {
+				typeID = sym.TypeID
+			}
+		}
+	}
+
+	if typeID == 0 {
+		if ident, ok := node.(*ast.Identifier); ok {
+			if sym, exists := bestScope.Resolve(ident.Value); exists {
+				typeID = sym.TypeID
+			}
+		} else if named, ok := node.(*ast.NamedType); ok {
+			if sym, exists := bestScope.Resolve(named.Name); exists {
+				typeID = sym.TypeID
+			}
+		} else if tID, exists := res.pool.NodeTypes[node]; exists {
+			typeID = tID
+		}
+	}
+
+	if int(typeID) > 0 && int(typeID) < len(res.pool.Types) {
+		t := res.pool.Types[typeID]
+		md := formatTypeMarkdown(t, res.pool)
+
+		targetNode := node
+		if faNode != nil {
+			targetNode = faNode
+		}
+		hoverRange := doc.spanToRange(targetNode.Span())
+
+		s.sendResult(req.ID, HoverResult{Contents: MarkupContent{Kind: "markdown", Value: md}, Range: &hoverRange})
+		return
+	}
+	s.sendResult(req.ID, nil)
 }
 
-// func findNodeAtOffset(pool *sema.TypePool, offset int) (ast.Node, sema.TypeID) {
-// 	var bestNode ast.Node
-// 	bestLen := -1
-// 	var bestID sema.TypeID
-//
-// 	for node, typeID := range pool.NodeTypes {
-// 		if node == nil {
-// 			continue
-// 		}
-//
-// 		// Safely handle specific known-dangerous nodes like empty blocks
-// 		if block, ok := node.(*ast.Block); ok && block.Statements == nil && block.Value == nil {
-// 			continue
-// 		}
-//
-// 		span := node.Span()
-// 		if span.Start < 0 || span.End < span.Start || offset < span.Start || offset > span.End {
-// 			continue
-// 		}
-// 		spanLen := span.End - span.Start
-// 		if bestLen == -1 || spanLen < bestLen {
-// 			bestNode, bestLen, bestID = node, spanLen, typeID
-// 		}
-// 	}
-// 	return bestNode, bestID
-// }
+func (s *Server) handleImplementation(req *Request, uri string, pos Position) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, nil)
+		return
+	}
+	res := runPipeline(uri, doc.Text, s.workspaceRoot)
+
+	offset := doc.positionToOffset(pos)
+	node, _ := findNodesAtOffset(res.program, offset)
+
+	if ident, ok := node.(*ast.Identifier); ok {
+		var locations []Location
+		for _, decl := range res.sortedDecls {
+			if impl, ok := decl.(*ast.ImplDecl); ok && impl.Target.Value == ident.Value {
+				implURI := uri
+				if mappedURI, ok := res.nodeURIs[impl]; ok {
+					implURI = mappedURI
+				}
+
+				implDoc := doc
+				if implURI != uri {
+					path := strings.TrimPrefix(implURI, "file://")
+					if content, err := os.ReadFile(path); err == nil {
+						implDoc = newDocument(implURI, string(content))
+					}
+				}
+				locations = append(locations, Location{URI: implURI, Range: implDoc.spanToRange(impl.Span())})
+			}
+		}
+		s.sendResult(req.ID, locations)
+		return
+	}
+	s.sendResult(req.ID, nil)
+}
 
 func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool) string {
 	var sb strings.Builder
@@ -822,7 +832,6 @@ func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool) string {
 		} else {
 			sb.WriteString(fmt.Sprintf("fnc %s(%s) = %s", name, strings.Join(params, ", "), retName))
 		}
-
 	case (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0:
 		sb.WriteString("enum " + t.Name + " {\n")
 		vnames := make([]string, 0, len(t.Variants))
@@ -830,17 +839,12 @@ func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool) string {
 			vnames = append(vnames, k)
 		}
 		sort.Strings(vnames)
-		for _, vname := range vnames {
-			if len(t.Variants[vname]) == 0 {
-				sb.WriteString(fmt.Sprintf("    %s,\n", vname))
-			} else {
-				sb.WriteString(fmt.Sprintf("    %s(...),\n", vname)) // simplified for brevity
-			}
+		for _, v := range vnames {
+			sb.WriteString(fmt.Sprintf("    %s,\n", v))
 		}
 		sb.WriteString("}")
-
 	case (t.Mask & sema.MaskIsStruct) != 0:
-		sb.WriteString("struct " + t.Name + " {\n...}") // simplified
+		sb.WriteString("struct " + t.Name + " {\n...}")
 	case (t.Mask & sema.MaskIsPointer) != 0:
 		base := ""
 		if int(t.BaseType) < len(pool.Types) {
@@ -861,6 +865,67 @@ func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool) string {
 }
 
 // ============================================================================
+// WORKSPACE & INLAY HINTS
+// ============================================================================
+
+func (s *Server) handleDocumentSymbol(req *Request, uri string) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, nil)
+		return
+	}
+	res := runPipeline(uri, doc.Text, s.workspaceRoot)
+
+	var symbols []DocumentSymbol
+	for _, decl := range res.sortedDecls {
+		switch v := decl.(type) {
+		case *ast.FunctionDecl:
+			if v.Name != nil {
+				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKFunction, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
+			}
+		case *ast.StructDecl:
+			if v.Name != nil {
+				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKStruct, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
+			}
+		case *ast.EnumDecl:
+			if v.Name != nil {
+				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKEnum, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
+			}
+		case *ast.VariableDecl:
+			if v.Name != nil {
+				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKVariable, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
+			}
+		}
+	}
+	s.sendResult(req.ID, symbols)
+}
+
+func (s *Server) handleInlayHint(req *Request, uri string) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, nil)
+		return
+	}
+	res := runPipeline(uri, doc.Text, s.workspaceRoot)
+	if res.pool == nil {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	hints := make([]InlayHint, 0)
+	walkChildren(res.program, func(n ast.Node) {
+		if vDecl, ok := n.(*ast.VariableDecl); ok && vDecl.Operator == ":=" && vDecl.Type == nil {
+			if typeID, exists := res.pool.NodeTypes[vDecl.Value]; exists && int(typeID) < len(res.pool.Types) {
+				tName := res.pool.Types[typeID].Name
+				pos := doc.offsetToPosition(vDecl.Name.Span().End)
+				hints = append(hints, InlayHint{Position: pos, Label: ": " + tName, Kind: 1, PaddingLeft: true})
+			}
+		}
+	})
+	s.sendResult(req.ID, hints)
+}
+
+// ============================================================================
 // SEMANTIC TOKENS
 // ============================================================================
 
@@ -870,40 +935,22 @@ func (s *Server) handleSemanticTokens(req *Request, uri string) {
 		s.sendResult(req.ID, map[string]interface{}{"data": []int{}})
 		return
 	}
+	res := runPipeline(uri, doc.Text, s.workspaceRoot)
 
-	res := runPipeline(doc.Text)
 	var tokens []int
-
-	// 0: type, 1: struct, 2: enum, 3: function, 4: variable, 5: keyword, 6: operator
 	prevLine, prevCol := 0, 0
 
 	for _, tok := range res.tokens {
 		tokType := -1
-
 		switch tok.Type {
-		case lexer.STRUCT, lexer.ENUM, lexer.IMPL, lexer.FNC, lexer.RET,
-			lexer.DEFER, lexer.BRK, lexer.IF, lexer.ELIF, lexer.ELSE,
-			lexer.MATCH, lexer.LOOP, lexer.AS, lexer.TRUE, lexer.FALSE:
+		case lexer.STRUCT, lexer.ENUM, lexer.IMPL, lexer.FNC, lexer.RET, lexer.DEFER, lexer.BRK, lexer.IF, lexer.ELIF, lexer.ELSE, lexer.MATCH, lexer.LOOP, lexer.AS, lexer.TRUE, lexer.FALSE:
 			tokType = 5
-
-		// 2. Operators
-		case lexer.ASSIGN, lexer.DECL_ASSIGN, lexer.MUT_ASSIGN, lexer.PLUS_ASSIGN,
-			lexer.MIN_ASSIGN, lexer.MUL_ASSIGN, lexer.DIV_ASSIGN, lexer.MOD_ASSIGN,
-			lexer.BIT_AND_ASSIGN, lexer.BIT_OR_ASSIGN, lexer.BIT_XOR_ASSIGN,
-			lexer.LSHIFT_ASSIGN, lexer.RSHIFT_ASSIGN, lexer.PLUS, lexer.MINUS,
-			lexer.ASTERISK, lexer.SLASH, lexer.MOD, lexer.BANG, lexer.TILDE,
-			lexer.AMPERS, lexer.PIPE, lexer.CARET, lexer.QUESTION, lexer.LSHIFT,
-			lexer.RSHIFT, lexer.AND, lexer.OR, lexer.EQ, lexer.NOT_EQ, lexer.LT,
-			lexer.LTE, lexer.GT, lexer.GTE, lexer.ARROW, lexer.RANGE, lexer.DOT:
+		case lexer.ASSIGN, lexer.DECL_ASSIGN, lexer.MUT_ASSIGN, lexer.PLUS_ASSIGN, lexer.MIN_ASSIGN, lexer.MUL_ASSIGN, lexer.DIV_ASSIGN, lexer.MOD_ASSIGN, lexer.BIT_AND_ASSIGN, lexer.BIT_OR_ASSIGN, lexer.BIT_XOR_ASSIGN, lexer.LSHIFT_ASSIGN, lexer.RSHIFT_ASSIGN, lexer.PLUS, lexer.MINUS, lexer.ASTERISK, lexer.SLASH, lexer.MOD, lexer.BANG, lexer.TILDE, lexer.AMPERS, lexer.PIPE, lexer.CARET, lexer.QUESTION, lexer.LSHIFT, lexer.RSHIFT, lexer.AND, lexer.OR, lexer.EQ, lexer.NOT_EQ, lexer.LT, lexer.LTE, lexer.GT, lexer.GTE, lexer.ARROW, lexer.RANGE, lexer.DOT:
 			tokType = 6
-
-		// 3. Identifiers
 		case lexer.IDENT:
-			tokType = 4 // Default variable
-			// Cross-reference with evaluator to color types/functions accurately!
-			// THE FIX: Changed tok.Value to tok.Literal
-			if sym, exists := res.globalScope.Resolve(tok.Literal); exists {
-				if int(sym.TypeID) < len(res.pool.Types) {
+			tokType = 4
+			if res.globalScope != nil {
+				if sym, exists := res.globalScope.Resolve(tok.Literal); exists && int(sym.TypeID) < len(res.pool.Types) {
 					t := res.pool.Types[sym.TypeID]
 					if (t.Mask & sema.MaskIsFunction) != 0 {
 						tokType = 3
@@ -916,8 +963,6 @@ func (s *Server) handleSemanticTokens(req *Request, uri string) {
 					}
 				}
 			}
-
-		// 4. Strings & Numbers (Optional, but makes it robust)
 		case lexer.STRING, lexer.CHAR:
 			tokType = 8
 		case lexer.INT, lexer.FLOAT:
@@ -930,7 +975,6 @@ func (s *Server) handleSemanticTokens(req *Request, uri string) {
 
 		pos := doc.offsetToPosition(tok.Span.Start)
 		length := tok.Span.End - tok.Span.Start
-
 		deltaLine := pos.Line - prevLine
 		deltaCol := pos.Character
 		if deltaLine == 0 {
@@ -941,7 +985,6 @@ func (s *Server) handleSemanticTokens(req *Request, uri string) {
 		prevLine = pos.Line
 		prevCol = pos.Character
 	}
-
 	s.sendResult(req.ID, map[string]interface{}{"data": tokens})
 }
 
@@ -957,7 +1000,7 @@ func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
 	}
 
 	offset := doc.positionToOffset(pos)
-	res := runPipeline(doc.Text)
+	res := runPipeline(uri, doc.Text, s.workspaceRoot)
 
 	if offset > 0 {
 		cursor := offset
@@ -965,15 +1008,38 @@ func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
 			cursor--
 		}
 		if cursor > 0 && doc.Text[cursor-1] == '.' {
-			items := s.dotCompletion(doc.Text, cursor-1, res)
-			if items != nil {
+			if items := s.dotCompletion(doc.Text, cursor-1, res); items != nil {
 				s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: items})
 				return
 			}
 		}
 	}
 
-	s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: s.generalCompletion(res)})
+	items := make([]CompletionItem, len(synoviumKeywords))
+	copy(items, synoviumKeywords)
+	if res.globalScope != nil && res.pool != nil {
+		for name, sym := range res.globalScope.Symbols {
+			if !sym.IsResolved || int(sym.TypeID) >= len(res.pool.Types) {
+				continue
+			}
+			t := res.pool.Types[sym.TypeID]
+			kind := CIKVariable
+			if (t.Mask & sema.MaskIsFunction) != 0 {
+				kind = CIKFunction
+			}
+			if (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0 {
+				kind = CIKEnum
+			}
+			if (t.Mask & sema.MaskIsStruct) != 0 {
+				kind = CIKStruct
+			}
+			if (t.Mask & sema.MaskIsMeta) != 0 {
+				kind = CIKKeyword
+			}
+			items = append(items, CompletionItem{Label: name, Kind: kind, Detail: t.Name})
+		}
+	}
+	s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: items})
 }
 
 func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) []CompletionItem {
@@ -1023,46 +1089,254 @@ func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) 
 	return items
 }
 
-func (s *Server) generalCompletion(res *pipelineResult) []CompletionItem {
-	items := make([]CompletionItem, len(synoviumKeywords))
-	copy(items, synoviumKeywords)
-	if res.globalScope == nil || res.pool == nil {
-		return items
-	}
-
-	for name, sym := range res.globalScope.Symbols {
-		if !sym.IsResolved || int(sym.TypeID) >= len(res.pool.Types) {
-			continue
-		}
-		t := res.pool.Types[sym.TypeID]
-		kind := CIKVariable
-		if (t.Mask & sema.MaskIsFunction) != 0 {
-			kind = CIKFunction
-		}
-		if (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0 {
-			kind = CIKEnum
-		}
-		if (t.Mask & sema.MaskIsStruct) != 0 {
-			kind = CIKStruct
-		}
-		if (t.Mask & sema.MaskIsMeta) != 0 {
-			kind = CIKKeyword
-		}
-		items = append(items, CompletionItem{Label: name, Kind: kind, Detail: t.Name})
-	}
-	return items
+var synoviumKeywords = []CompletionItem{
+	{Label: "fnc", Kind: CIKKeyword, InsertText: "fnc ${1:name}(${2:params}) = ${3:ret} {\n\t$0\n}", InsertTextFormat: 2},
+	{Label: "struct", Kind: CIKKeyword, InsertText: "struct ${1:Name} {\n\t${2:field}: ${3:type}\n}", InsertTextFormat: 2},
+	{Label: "enum", Kind: CIKKeyword, InsertText: "enum ${1:Name} {\n\t${2:Variant}\n}", InsertTextFormat: 2},
+	{Label: "impl", Kind: CIKKeyword, InsertText: "impl ${1:Type} {\n\t$0\n}", InsertTextFormat: 2},
+	{Label: "if", Kind: CIKKeyword, InsertText: "if ${1:cond} {\n\t$0\n}", InsertTextFormat: 2},
+	{Label: "elif", Kind: CIKKeyword, InsertText: "elif ${1:cond} {\n\t$0\n}", InsertTextFormat: 2},
+	{Label: "else", Kind: CIKKeyword, InsertText: "else {\n\t$0\n}", InsertTextFormat: 2},
+	{Label: "loop", Kind: CIKKeyword, InsertText: "loop(${1:i}: ${2:i32} = ${3:0}...${4:n}) {\n\t$0\n}", InsertTextFormat: 2},
+	{Label: "match", Kind: CIKKeyword, InsertText: "match ${1:val} {\n\t${2:Variant}(${3:v}) -> { $0 }\n}", InsertTextFormat: 2},
+	{Label: "ret", Kind: CIKKeyword, InsertTextFormat: 1},
+	{Label: "defer", Kind: CIKKeyword, InsertText: "defer { $0 }", InsertTextFormat: 2},
 }
 
-// newDocument is a helper to instantly index a file's line offsets for O(log N) lookups
-func newDocument(uri, text string) *Document {
-	offsets := []int{0}
-	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' {
-			offsets = append(offsets, i+1)
-		}
+func isIdentChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+// ============================================================================
+// AST TRAVERSER
+// ============================================================================
+
+func findNodesAtOffset(root ast.Node, offset int) (ast.Node, *ast.FieldAccessExpr) {
+	var tightest ast.Node
+	var tightestFA *ast.FieldAccessExpr
+	minSize := -1
+	minFASize := -1
+
+	walkChildren(root, func(n ast.Node) {
+		func() {
+			defer func() { recover() }()
+			span := n.Span()
+			if span.Start <= offset && offset <= span.End {
+				size := span.End - span.Start
+				if minSize == -1 || size < minSize {
+					minSize = size
+					tightest = n
+				}
+				if fa, ok := n.(*ast.FieldAccessExpr); ok {
+					if minFASize == -1 || size < minFASize {
+						minFASize = size
+						tightestFA = fa
+					}
+				}
+			}
+		}()
+	})
+	return tightest, tightestFA
+}
+
+func walkChildren(n ast.Node, visit func(ast.Node)) {
+	if n == nil {
+		return
 	}
-	return &Document{
-		Text:        text,
-		LineOffsets: offsets,
+	visit(n) // Visit self first
+	switch v := n.(type) {
+	case *ast.SourceFile:
+		for _, d := range v.Declarations {
+			walkChildren(d, visit)
+		}
+	case *ast.Block:
+		for _, st := range v.Statements {
+			walkChildren(st, visit)
+		}
+		if v.Value != nil {
+			walkChildren(v.Value, visit)
+		}
+	case *ast.VariableDecl:
+		if v.Name != nil {
+			walkChildren(v.Name, visit)
+		}
+		if v.Type != nil {
+			walkChildren(v.Type, visit)
+		}
+		if v.Value != nil {
+			walkChildren(v.Value, visit)
+		}
+	case *ast.ExprStmt:
+		walkChildren(v.Value, visit)
+	case *ast.FunctionType:
+		for _, p := range v.Parameters {
+			walkChildren(p, visit)
+		}
+		if v.ReturnType != nil {
+			walkChildren(v.ReturnType, visit)
+		}
+	case *ast.PrefixExpr:
+		walkChildren(v.Right, visit)
+	case *ast.InfixExpr:
+		walkChildren(v.Left, visit)
+		walkChildren(v.Right, visit)
+	case *ast.NamedType:
+		for _, g := range v.GenericArgs {
+			walkChildren(g, visit)
+		}
+	case *ast.PointerType:
+		walkChildren(v.Base, visit)
+	case *ast.ReferenceType:
+		walkChildren(v.Base, visit)
+	case *ast.ArrayType:
+		walkChildren(v.Base, visit)
+		if v.Size != nil {
+			walkChildren(v.Size, visit)
+		}
+	case *ast.CallExpr:
+		walkChildren(v.Function, visit)
+		for _, a := range v.Arguments {
+			walkChildren(a, visit)
+		}
+	case *ast.FieldAccessExpr:
+		walkChildren(v.Left, visit)
+		if v.Field != nil {
+			walkChildren(v.Field, visit)
+		}
+	case *ast.IndexExpr:
+		walkChildren(v.Left, visit)
+		walkChildren(v.Index, visit)
+	case *ast.FunctionDecl:
+		if v.Name != nil {
+			walkChildren(v.Name, visit)
+		}
+		for _, p := range v.Parameters {
+			walkChildren(p, visit)
+		}
+		if v.ReturnType != nil {
+			walkChildren(v.ReturnType, visit)
+		}
+		if v.Body != nil {
+			walkChildren(v.Body, visit)
+		}
+	case *ast.Parameter:
+		if v.Name != nil {
+			walkChildren(v.Name, visit)
+		}
+		if v.Type != nil {
+			walkChildren(v.Type, visit)
+		}
+	case *ast.StructDecl:
+		if v.Name != nil {
+			walkChildren(v.Name, visit)
+		}
+		for _, p := range v.GenericParams {
+			walkChildren(p, visit)
+		}
+		for _, f := range v.Fields {
+			walkChildren(f, visit)
+		}
+	case *ast.FieldDecl:
+		if v.Name != nil {
+			walkChildren(v.Name, visit)
+		}
+		if v.Type != nil {
+			walkChildren(v.Type, visit)
+		}
+	case *ast.EnumDecl:
+		if v.Name != nil {
+			walkChildren(v.Name, visit)
+		}
+		for _, p := range v.GenericParams {
+			walkChildren(p, visit)
+		}
+		for _, variant := range v.Variants {
+			walkChildren(variant, visit)
+		}
+	case *ast.VariantDecl:
+		if v.Name != nil {
+			walkChildren(v.Name, visit)
+		}
+		for _, t := range v.Types {
+			walkChildren(t, visit)
+		}
+	case *ast.ImplDecl:
+		if v.Target != nil {
+			walkChildren(v.Target, visit)
+		}
+		for _, m := range v.Methods {
+			walkChildren(m, visit)
+		}
+	case *ast.IfExpr:
+		walkChildren(v.Condition, visit)
+		walkChildren(v.Body, visit)
+		for _, c := range v.ElifConds {
+			walkChildren(c, visit)
+		}
+		for _, b := range v.ElifBodies {
+			walkChildren(b, visit)
+		}
+		if v.ElseBody != nil {
+			walkChildren(v.ElseBody, visit)
+		}
+	case *ast.MatchExpr:
+		walkChildren(v.Value, visit)
+		for _, a := range v.Arms {
+			walkChildren(a, visit)
+		}
+	case *ast.MatchArm:
+		if v.Pattern != nil {
+			walkChildren(v.Pattern, visit)
+		}
+		for _, p := range v.Params {
+			walkChildren(p, visit)
+		}
+		walkChildren(v.Body, visit)
+	case *ast.LoopExpr:
+		if v.Label != nil {
+			walkChildren(v.Label, visit)
+		}
+		if v.Condition != nil {
+			walkChildren(v.Condition, visit)
+		}
+		walkChildren(v.Body, visit)
+	case *ast.StructInitExpr:
+		walkChildren(v.Name, visit)
+		for _, f := range v.Fields {
+			walkChildren(f, visit)
+		}
+	case *ast.StructInitField:
+		if v.Name != nil {
+			walkChildren(v.Name, visit)
+		}
+		walkChildren(v.Value, visit)
+		if v.Type != nil {
+			walkChildren(v.Type, visit)
+		}
+	case *ast.CastExpr:
+		walkChildren(v.Left, visit)
+		walkChildren(v.Type, visit)
+	case *ast.BubbleExpr:
+		walkChildren(v.Left, visit)
+	case *ast.ReturnStmt:
+		if v.Value != nil {
+			walkChildren(v.Value, visit)
+		}
+	case *ast.DeferStmt:
+		walkChildren(v.Body, visit)
+	case *ast.BreakStmt:
+		if v.Label != nil {
+			walkChildren(v.Label, visit)
+		}
+		if v.Value != nil {
+			walkChildren(v.Value, visit)
+		}
+	case *ast.ArrayInitExpr:
+		for _, el := range v.Elements {
+			walkChildren(el, visit)
+		}
+		if v.Count != nil {
+			walkChildren(v.Count, visit)
+		}
 	}
 }

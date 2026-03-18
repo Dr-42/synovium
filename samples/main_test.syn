@@ -17,6 +17,7 @@ fnc main() = i32 {
     // Uses the operator overload defined in Matrix.syn
     sum : Matrix = m1 + m2;
     sum.scale(2);
+    printf("Matrix Sum: a=%d, b=%d\n", sum.a, "ptr");
 
     printf("Dynamically Loaded Matrix Sum: a=%d, b=%d\n", sum.a, sum.b);
 

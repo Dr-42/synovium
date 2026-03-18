@@ -319,28 +319,52 @@ func (l *Lexer) readNumber() (TokenType, string) {
 
 func (l *Lexer) readString() string {
 	startPos := l.position
-	l.readChar()
+	l.readChar() // Skip opening quote
+
 	for l.ch != '"' && l.ch != 0 {
 		if l.ch == '\\' {
 			l.readChar()
 		}
 		l.readChar()
 	}
-	l.readChar()
-	return l.input[startPos:l.position]
+
+	// Only consume the closing quote if we actually found one
+	if l.ch == '"' {
+		l.readChar()
+	}
+
+	// THE FIX: Prevent slice out-of-bounds if EOF was reached mid-string
+	endPos := l.position
+	if endPos > len(l.input) {
+		endPos = len(l.input)
+	}
+
+	return l.input[startPos:endPos]
 }
 
 func (l *Lexer) readCharLiteral() string {
 	startPos := l.position
-	l.readChar()
-	for l.ch != '\'' && l.ch != 0 {
-		if l.ch == '\\' {
-			l.readChar()
-		}
+	l.readChar() // Skip opening quote
+
+	if l.ch == '\\' {
+		l.readChar() // Skip escape character
+		l.readChar() // Skip the escaped character itself
+	} else if l.ch != 0 {
+		l.readChar() // Skip standard character
+	}
+
+	// Only consume the closing quote if we actually found one
+	if l.ch == '\'' {
 		l.readChar()
 	}
-	l.readChar()
-	return l.input[startPos:l.position]
+
+	// THE FIX: Prevent slice out-of-bounds if EOF was reached mid-char
+	endPos := l.position
+	if endPos > len(l.input) {
+		endPos = len(l.input)
+	}
+
+	return l.input[startPos:endPos]
 }
 
 func isLetter(ch byte) bool {
