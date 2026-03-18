@@ -83,7 +83,8 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 	}
 	sort.Strings(sortedNames)
 
-	for name, node := range d.Nodes {
+	for _, name := range sortedNames {
+		node := d.Nodes[name]
 		deps := d.extractDependencies(node.Decl)
 
 		// Determine the module prefix of the CURRENT node
@@ -140,7 +141,9 @@ func (d *DAG) BuildAndSort(program *ast.SourceFile) ([]ast.Decl, error) {
 	var sorted []*GraphNode // Sort the Nodes, not the raw Decls!
 	var queue []*GraphNode
 
-	for _, node := range d.Nodes {
+	// Iterate over the same sortedNames array to ensure alphabetical queue initialization
+	for _, name := range sortedNames {
+		node := d.Nodes[name]
 		if node.InDegree == 0 {
 			queue = append(queue, node)
 		}
