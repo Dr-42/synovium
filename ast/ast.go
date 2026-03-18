@@ -331,7 +331,18 @@ type FunctionDecl struct {
 func (f *FunctionDecl) declNode() {}
 
 func (f *FunctionDecl) Span() lexer.Span {
-	return lexer.Span{Start: f.Token.Span.Start, End: f.Body.Span().End}
+	// Fallback to the 'fnc' token itself if everything else is missing
+	end := f.Token.Span.End
+
+	if f.ReturnType != nil {
+		end = f.ReturnType.Span().End
+	}
+
+	if f.Body != nil {
+		end = f.Body.Span().End
+	}
+
+	return lexer.Span{Start: f.Token.Span.Start, End: end}
 }
 
 type Parameter struct {

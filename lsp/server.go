@@ -29,8 +29,6 @@ var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // JSON-RPC TRANSPORT TYPES
 // ============================================================================
 
-// Request is the inbound message from the editor.
-// ID is a pointer so we can distinguish "no ID" (notifications) from ID=0.
 type Request struct {
 	RPC    string           `json:"jsonrpc"`
 	ID     *json.RawMessage `json:"id,omitempty"`
@@ -38,7 +36,6 @@ type Request struct {
 	Params json.RawMessage  `json:"params,omitempty"`
 }
 
-// Response is sent back to the editor for requests (has an ID).
 type Response struct {
 	RPC    string           `json:"jsonrpc"`
 	ID     *json.RawMessage `json:"id"`
@@ -46,7 +43,6 @@ type Response struct {
 	Error  interface{}      `json:"error,omitempty"`
 }
 
-// Notification is sent to the editor unprompted (no ID), e.g. publishDiagnostics.
 type Notification struct {
 	RPC    string      `json:"jsonrpc"`
 	Method string      `json:"method"`
@@ -67,7 +63,11 @@ type Range struct {
 	End   Position `json:"end"`
 }
 
-// Diagnostic severity constants (LSP spec).
+type Location struct {
+	URI   string `json:"uri"`
+	Range Range  `json:"range"`
+}
+
 const (
 	SeverityError       = 1
 	SeverityWarning     = 2
@@ -87,21 +87,16 @@ type PublishDiagnosticsParams struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
-// --- Hover ---
-
 type HoverResult struct {
 	Contents MarkupContent `json:"contents"`
 	Range    *Range        `json:"range,omitempty"`
 }
 
 type MarkupContent struct {
-	Kind  string `json:"kind"`  // "plaintext" or "markdown"
+	Kind  string `json:"kind"`
 	Value string `json:"value"`
 }
 
-// --- Completion ---
-
-// CompletionItemKind mirrors the LSP spec numeric values.
 const (
 	CIKText       = 1
 	CIKMethod     = 2
@@ -118,9 +113,8 @@ type CompletionItem struct {
 	Label            string `json:"label"`
 	Kind             int    `json:"kind"`
 	Detail           string `json:"detail,omitempty"`
-	Documentation    string `json:"documentation,omitempty"`
 	InsertText       string `json:"insertText,omitempty"`
-	InsertTextFormat int    `json:"insertTextFormat,omitempty"` // 1=plaintext 2=snippet
+	InsertTextFormat int    `json:"insertTextFormat,omitempty"`
 }
 
 type CompletionList struct {
@@ -129,31 +123,46 @@ type CompletionList struct {
 }
 
 // ============================================================================
-// DOCUMENT STORE
+// DOCUMENT STORE (O(log N) Indexed)
 // ============================================================================
 
-// docStore is a thread-safe map of URI -> full file text.
-// The LSP server receives full-file syncs (changeType=1) so we just overwrite.
+type Document struct {
+	Text        string
+	LineOffsets []int // Caches the byte offset of the start of each line
+}
+
 type docStore struct {
 	mu   sync.RWMutex
-	docs map[string]string
+	docs map[string]*Document
 }
 
 func newDocStore() *docStore {
-	return &docStore{docs: make(map[string]string)}
+	return &docStore{docs: make(map[string]*Document)}
 }
 
 func (d *docStore) set(uri, text string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.docs[uri] = text
+
+	// Precompute line offsets for O(log N) positional lookups
+	offsets := []int{0}
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' {
+			offsets = append(offsets, i+1)
+		}
+	}
+
+	d.docs[uri] = &Document{
+		Text:        text,
+		LineOffsets: offsets,
+	}
 }
 
-func (d *docStore) get(uri string) (string, bool) {
+func (d *docStore) get(uri string) (*Document, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	t, ok := d.docs[uri]
-	return t, ok
+	doc, ok := d.docs[uri]
+	return doc, ok
 }
 
 func (d *docStore) del(uri string) {
@@ -162,22 +171,55 @@ func (d *docStore) del(uri string) {
 	delete(d.docs, uri)
 }
 
+func (doc *Document) offsetToPosition(offset int) Position {
+	if offset < 0 {
+		return Position{Line: 0, Character: 0}
+	}
+
+	// Binary search for the line
+	line := sort.Search(len(doc.LineOffsets), func(i int) bool {
+		return doc.LineOffsets[i] > offset
+	}) - 1
+
+	if line < 0 {
+		line = 0
+	}
+
+	char := offset - doc.LineOffsets[line]
+	return Position{Line: line, Character: char}
+}
+
+func (doc *Document) positionToOffset(pos Position) int {
+	if pos.Line < 0 || pos.Line >= len(doc.LineOffsets) {
+		return len(doc.Text)
+	}
+	offset := doc.LineOffsets[pos.Line] + pos.Character
+	if offset > len(doc.Text) {
+		return len(doc.Text)
+	}
+	return offset
+}
+
+func (doc *Document) spanToRange(span lexer.Span) Range {
+	return Range{
+		Start: doc.offsetToPosition(span.Start),
+		End:   doc.offsetToPosition(span.End),
+	}
+}
+
 // ============================================================================
 // PIPELINE
 // ============================================================================
 
-// pipelineResult bundles everything produced by a full lex→parse→sema pass.
 type pipelineResult struct {
 	pool        *sema.TypePool
 	globalScope *sema.Scope
 	sortedDecls []ast.Decl
 	parseErrors []string
 	semaErrors  []string
+	tokens      []lexer.Token // Needed for Semantic Highlighting
 }
 
-// runPipeline runs the Synovium compiler front-end up to (and including) semantic
-// analysis. The JIT callback is stubbed so we never shell out to Clang on
-// keystrokes — the TAST type information is fully populated without it.
 func runPipeline(code string) *pipelineResult {
 	res := &pipelineResult{}
 
@@ -186,21 +228,24 @@ func runPipeline(code string) *pipelineResult {
 	program := p.ParseSourceFile()
 	res.parseErrors = p.Errors()
 
+	// Re-lex to save tokens for semantic highlighting
+	l2 := lexer.New(code)
+	for {
+		tok := l2.NextToken()
+		res.tokens = append(res.tokens, tok)
+		if tok.Type == lexer.EOF {
+			break
+		}
+	}
+
 	pool := sema.NewTypePool()
 	globalScope := sema.NewScope(nil)
 	evaluator := sema.NewEvaluator(pool, code)
 	evaluator.GlobalDecls = program.Declarations
 
-	// ── JIT STUB ──────────────────────────────────────────────────────────────
-	// Never call Clang in the LSP hot path. Return zeroed bytes whose length
-	// matches the target type's size — structurally valid, value is a lie, but
-	// the TAST type stamps are all we need for hover and completion.
 	evaluator.JITCallback = func(
-		expr ast.Expr,
-		targetType sema.TypeID,
-		pool *sema.TypePool,
-		envScope *sema.Scope,
-		globalDecls []ast.Decl,
+		expr ast.Expr, targetType sema.TypeID, pool *sema.TypePool,
+		envScope *sema.Scope, globalDecls []ast.Decl,
 	) ([]byte, error) {
 		size := pool.Types[targetType].TrueSizeBits / 8
 		if size == 0 {
@@ -208,11 +253,63 @@ func runPipeline(code string) *pipelineResult {
 		}
 		return make([]byte, size), nil
 	}
-	// ─────────────────────────────────────────────────────────────────────────
 
 	evaluator.InjectBuiltins(globalScope)
 
 	dag := sema.NewDAG(globalScope)
+
+	loadedFiles := make(map[string]bool)
+	dag.ParseModule = func(modulePath string) ([]ast.Decl, error) {
+		parts := strings.Split(modulePath, ".")
+
+		for i := len(parts); i > 0; i-- {
+			filename := strings.Join(parts[:i], string(os.PathSeparator)) + ".syn"
+
+			if _, err := os.Stat(filename); err == nil {
+				if loadedFiles[filename] {
+					return nil, nil // Already in the DAG queue!
+				}
+				loadedFiles[filename] = true
+
+				content, err := os.ReadFile(filename)
+				if err != nil {
+					return nil, err
+				}
+
+				l := lexer.New(string(content))
+				p := parser.New(l)
+				prog := p.ParseSourceFile()
+
+				if len(p.Errors()) > 0 {
+					return nil, fmt.Errorf("parse errors in module '%s'", filename)
+				}
+
+				// ACT 2: AST Module Prefix Injection
+				modulePrefix := strings.Join(parts[:i], ".")
+				for _, decl := range prog.Declarations {
+					switch v := decl.(type) {
+					case *ast.StructDecl:
+						v.Name.Value = modulePrefix + "." + v.Name.Value
+					case *ast.EnumDecl:
+						v.Name.Value = modulePrefix + "." + v.Name.Value
+					case *ast.FunctionDecl:
+						if v.Name != nil {
+							v.Name.Value = modulePrefix + "." + v.Name.Value
+						}
+					case *ast.VariableDecl:
+						v.Name.Value = modulePrefix + "." + v.Name.Value
+					case *ast.ImplDecl:
+						if !strings.Contains(v.Target.Value, ".") {
+							v.Target.Value = modulePrefix + "." + v.Target.Value
+						}
+					}
+				}
+				return prog.Declarations, nil
+			}
+		}
+		return nil, nil
+	}
+
 	sortedDecls, err := dag.BuildAndSort(program)
 	if err != nil {
 		res.semaErrors = append(res.semaErrors, err.Error())
@@ -232,10 +329,6 @@ func runPipeline(code string) *pipelineResult {
 	return res
 }
 
-// ============================================================================
-// KEYWORD COMPLETION ITEMS  (defined here so Part 5 can reference them)
-// ============================================================================
-
 var synoviumKeywords = []CompletionItem{
 	{Label: "fnc", Kind: CIKKeyword, InsertText: "fnc ${1:name}(${2:params}) = ${3:ret} {\n\t$0\n}", InsertTextFormat: 2},
 	{Label: "struct", Kind: CIKKeyword, InsertText: "struct ${1:Name} {\n\t${2:field}: ${3:type}\n}", InsertTextFormat: 2},
@@ -247,94 +340,27 @@ var synoviumKeywords = []CompletionItem{
 	{Label: "loop", Kind: CIKKeyword, InsertText: "loop(${1:i}: ${2:i32} = ${3:0}...${4:n}) {\n\t$0\n}", InsertTextFormat: 2},
 	{Label: "match", Kind: CIKKeyword, InsertText: "match ${1:val} {\n\t${2:Variant}(${3:v}) -> { $0 }\n}", InsertTextFormat: 2},
 	{Label: "ret", Kind: CIKKeyword, InsertTextFormat: 1},
-	{Label: "brk", Kind: CIKKeyword, InsertTextFormat: 1},
 	{Label: "defer", Kind: CIKKeyword, InsertText: "defer { $0 }", InsertTextFormat: 2},
-	{Label: "as", Kind: CIKKeyword, InsertTextFormat: 1},
-	{Label: "type", Kind: CIKKeyword, InsertTextFormat: 1},
 }
 
-// ============================================================================
-// POSITION / SPAN UTILITIES
-// ============================================================================
-
-// positionToOffset converts a 0-indexed LSP (line, character) into a byte offset.
-func positionToOffset(code string, pos Position) int {
-	line, col := 0, 0
-	for i := 0; i < len(code); i++ {
-		if line == pos.Line && col == pos.Character {
-			return i
-		}
-		if code[i] == '\n' {
-			line++
-			col = 0
-		} else {
-			col++
-		}
-	}
-	return len(code)
-}
-
-// offsetToPosition converts a byte offset into a 0-indexed LSP Position.
-func offsetToPosition(code string, offset int) Position {
-	line, col := 0, 0
-	for i := 0; i < offset && i < len(code); i++ {
-		if code[i] == '\n' {
-			line++
-			col = 0
-		} else {
-			col++
-		}
-	}
-	return Position{Line: line, Character: col}
-}
-
-// spanToRange converts a lexer byte-span into an LSP Range.
-func spanToRange(code string, span lexer.Span) Range {
-	return Range{
-		Start: offsetToPosition(code, span.Start),
-		End:   offsetToPosition(code, span.End),
-	}
-}
-
-// isIdentChar reports whether c can appear inside a Synovium identifier.
 func isIdentChar(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
 		(c >= '0' && c <= '9') || c == '_'
 }
 
-// Ensure sort is used (it's used in Part 4; this silences the import if Part 1
-// is ever compiled standalone during development).
-var _ = sort.Strings
-var _ = fmt.Sprintf
-var _ = strconv.Atoi
-var _ = strings.Split
-var _ = bufio.NewReader
-var _ = io.EOF
-var _ = log.New
-
 // ============================================================================
-// SERVER  (Part 2 of 5)
+// SERVER
 // ============================================================================
-//
-// Contains:
-//   - Server struct
-//   - Start()  — entry point called from main.go
-//   - run()    — the main read loop
-//   - dispatch() — routes every incoming method to its handler
 
-// Server holds all mutable server state.
 type Server struct {
 	docs   *docStore
 	writer *bufio.Writer
 	logger *log.Logger
 }
 
-// Start is called by main.go when the user runs `synovium lsp`.
-// It boots the server and blocks until stdin is closed.
 func Start() {
 	logFile, err := os.OpenFile("synovium_lsp.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	if err != nil {
-		// Fall back to stderr so we at least get *something* if the log file fails.
 		logFile = os.Stderr
 	} else {
 		defer logFile.Close()
@@ -350,24 +376,19 @@ func Start() {
 	s.run()
 }
 
-// run reads Content-Length-framed JSON-RPC messages from stdin forever.
 func (s *Server) run() {
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
-		// ── Step 1: read HTTP-style headers until blank line ──────────────────
 		contentLength := -1
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
-				if err != io.EOF {
-					s.logger.Println("stdin read error:", err)
-				}
 				return
 			}
 			line = strings.TrimSpace(line)
 			if line == "" {
-				break // blank line signals end-of-headers
+				break
 			}
 			if strings.HasPrefix(line, "Content-Length:") {
 				lenStr := strings.TrimSpace(strings.TrimPrefix(line, "Content-Length:"))
@@ -379,17 +400,13 @@ func (s *Server) run() {
 			continue
 		}
 
-		// ── Step 2: read exactly contentLength bytes ──────────────────────────
 		body := make([]byte, contentLength)
 		if _, err := io.ReadFull(reader, body); err != nil {
-			s.logger.Println("body read error:", err)
 			return
 		}
 
-		// ── Step 3: unmarshal and dispatch ────────────────────────────────────
 		var req Request
 		if err := json.Unmarshal(body, &req); err != nil {
-			s.logger.Println("unmarshal error:", err)
 			continue
 		}
 
@@ -398,25 +415,17 @@ func (s *Server) run() {
 	}
 }
 
-// dispatch routes an incoming request or notification to the correct handler.
 func (s *Server) dispatch(req *Request) {
 	switch req.Method {
-
-	// ── Lifecycle ─────────────────────────────────────────────────────────────
 	case "initialize":
 		s.handleInitialize(req)
-
-	case "initialized":
-		// Client acknowledgement — no response required.
-
-	case "shutdown":
-		// Client is about to send "exit". Reply with null result.
-		s.sendResult(req.ID, nil)
-
+	case "initialized", "shutdown":
+		if req.ID != nil {
+			s.sendResult(req.ID, nil)
+		}
 	case "exit":
 		os.Exit(0)
 
-	// ── Text Document Synchronisation ─────────────────────────────────────────
 	case "textDocument/didOpen":
 		var p struct {
 			TextDocument struct {
@@ -426,7 +435,6 @@ func (s *Server) dispatch(req *Request) {
 		}
 		json.Unmarshal(req.Params, &p)
 		s.docs.set(p.TextDocument.URI, p.TextDocument.Text)
-		// Diagnostics are slow (full pipeline); run them off the dispatch goroutine.
 		go s.publishDiagnostics(p.TextDocument.URI, p.TextDocument.Text)
 
 	case "textDocument/didChange":
@@ -440,7 +448,6 @@ func (s *Server) dispatch(req *Request) {
 		}
 		json.Unmarshal(req.Params, &p)
 		if len(p.ContentChanges) > 0 {
-			// Full-sync mode: take the last change (should only ever be one).
 			text := p.ContentChanges[len(p.ContentChanges)-1].Text
 			s.docs.set(p.TextDocument.URI, text)
 			go s.publishDiagnostics(p.TextDocument.URI, text)
@@ -454,10 +461,8 @@ func (s *Server) dispatch(req *Request) {
 		}
 		json.Unmarshal(req.Params, &p)
 		s.docs.del(p.TextDocument.URI)
-		// Clear any lingering diagnostics for this file in the editor.
 		go s.sendDiagnostics(p.TextDocument.URI, []Diagnostic{})
 
-	// ── Language Features ─────────────────────────────────────────────────────
 	case "textDocument/hover":
 		var p struct {
 			TextDocument struct {
@@ -467,6 +472,25 @@ func (s *Server) dispatch(req *Request) {
 		}
 		json.Unmarshal(req.Params, &p)
 		s.handleHover(req, p.TextDocument.URI, p.Position)
+
+	case "textDocument/definition":
+		var p struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
+			Position Position `json:"position"`
+		}
+		json.Unmarshal(req.Params, &p)
+		s.handleDefinition(req, p.TextDocument.URI, p.Position)
+
+	case "textDocument/semanticTokens/full":
+		var p struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
+		}
+		json.Unmarshal(req.Params, &p)
+		s.handleSemanticTokens(req, p.TextDocument.URI)
 
 	case "textDocument/completion":
 		var p struct {
@@ -479,140 +503,91 @@ func (s *Server) dispatch(req *Request) {
 		s.handleCompletion(req, p.TextDocument.URI, p.Position)
 
 	default:
-		// For any method we don't support, reply with "method not found" if it
-		// was a request (has an ID). Notifications (no ID) are silently ignored.
 		if req.ID != nil {
 			s.sendError(req.ID, -32601, "method not found: "+req.Method)
 		}
 	}
 }
 
-// ============================================================================
-// TRANSPORT HELPERS
-// ============================================================================
-
-// sendRaw JSON-marshals v and writes it as a Content-Length-framed message.
 func (s *Server) sendRaw(v interface{}) {
-	body, err := json.Marshal(v)
-	if err != nil {
-		s.logger.Println("marshal error:", err)
-		return
-	}
+	body, _ := json.Marshal(v)
 	fmt.Fprintf(s.writer, "Content-Length: %d\r\n\r\n", len(body))
 	s.writer.Write(body)
 	s.writer.Flush()
 }
 
-// sendResult replies to a request with a success result.
 func (s *Server) sendResult(id *json.RawMessage, result interface{}) {
 	s.sendRaw(Response{RPC: "2.0", ID: id, Result: result})
 }
 
-// sendError replies to a request with a JSON-RPC error object.
 func (s *Server) sendError(id *json.RawMessage, code int, msg string) {
-	s.sendRaw(map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"error":   map[string]interface{}{"code": code, "message": msg},
-	})
+	s.sendRaw(map[string]interface{}{"jsonrpc": "2.0", "id": id, "error": map[string]interface{}{"code": code, "message": msg}})
 }
 
-// sendDiagnostics pushes a publishDiagnostics notification to the editor.
 func (s *Server) sendDiagnostics(uri string, diagnostics []Diagnostic) {
 	if diagnostics == nil {
-		diagnostics = []Diagnostic{} // JSON must be [] not null
+		diagnostics = []Diagnostic{}
 	}
 	s.sendRaw(Notification{
 		RPC:    "2.0",
 		Method: "textDocument/publishDiagnostics",
 		Params: PublishDiagnosticsParams{URI: uri, Diagnostics: diagnostics},
 	})
-	s.logger.Printf("→ publishDiagnostics %s (%d items)", uri, len(diagnostics))
 }
 
-// ============================================================================
-// INITIALIZE  (Part 3 of 5)
-// ============================================================================
-//
-// Contains:
-//   - handleInitialize  — capability negotiation
-//   - publishDiagnostics — runs the full pipeline and sends errors to editor
-//   - parseSemaError    — recovers line/col/squiggly-length from formatted errors
-
-// handleInitialize responds to the editor's opening handshake with the set of
-// capabilities this server supports.
 func (s *Server) handleInitialize(req *Request) {
 	s.sendResult(req.ID, map[string]interface{}{
 		"capabilities": map[string]interface{}{
-			// Full-file sync: editor sends the entire document on every change.
-			"textDocumentSync": map[string]interface{}{
-				"openClose": true,
-				"change":    1,
+			"textDocumentSync":   map[string]interface{}{"openClose": true, "change": 1},
+			"hoverProvider":      true,
+			"definitionProvider": true, // GOTO DEFINITION
+			"semanticTokensProvider": map[string]interface{}{ // SEMANTIC TOKENS
+				"legend": map[string]interface{}{
+					"tokenTypes":     []string{"type", "struct", "enum", "function", "variable", "keyword", "operator", "number", "string"},
+					"tokenModifiers": []string{"declaration"},
+				},
+				"full": true,
 			},
-			// Hover over any identifier to see its resolved type.
-			"hoverProvider": true,
-			// Completion triggered by '.' and ':'.
 			"completionProvider": map[string]interface{}{
 				"triggerCharacters": []string{".", ":"},
 				"resolveProvider":   false,
 			},
 		},
-		"serverInfo": map[string]interface{}{
-			"name":    "synovium-lsp",
-			"version": "0.0.1",
-		},
 	})
 }
 
 // ============================================================================
-// DIAGNOSTICS
+// DIAGNOSTICS & PARSING
 // ============================================================================
 
-// publishDiagnostics runs the full Synovium front-end pipeline over `code` and
-// pushes any parse or semantic errors to the editor as LSP diagnostics.
 func (s *Server) publishDiagnostics(uri, code string) {
+	//doc, _ := s.docs.get(uri)
 	var diagnostics []Diagnostic
-
 	res := runPipeline(code)
 
-	// ── 1. Parse errors ───────────────────────────────────────────────────────
-	// The parser reports errors as plain strings, sometimes containing
-	// "at line N". We extract the line number when present.
 	for _, msg := range res.parseErrors {
 		clean := ansiRegex.ReplaceAllString(msg, "")
-
 		line := 0
 		if parts := strings.Split(clean, "at line "); len(parts) >= 2 {
 			numStr := strings.TrimSpace(parts[1])
-			// The number might be followed by more text; grab just the digits.
 			end := 0
 			for end < len(numStr) && numStr[end] >= '0' && numStr[end] <= '9' {
 				end++
 			}
 			if end > 0 {
 				line, _ = strconv.Atoi(numStr[:end])
-				line-- // LSP lines are 0-indexed
+				line--
 				if line < 0 {
 					line = 0
 				}
 			}
 		}
-
 		diagnostics = append(diagnostics, Diagnostic{
-			Range: Range{
-				Start: Position{Line: line, Character: 0},
-				End:   Position{Line: line, Character: 9999},
-			},
-			Severity: SeverityError,
-			Source:   "synovium(parse)",
-			Message:  "Syntax Error: " + clean,
+			Range:    Range{Start: Position{line, 0}, End: Position{line, 9999}},
+			Severity: SeverityError, Source: "synovium(parse)", Message: "Syntax Error: " + clean,
 		})
 	}
 
-	// ── 2. Semantic / DAG errors ──────────────────────────────────────────────
-	// The evaluator formats errors as multi-line ANSI strings with an embedded
-	// "--> line L:C" coordinate and a "^^^^" squiggly underline.
-	// parseSemaError recovers all of that into a structured Diagnostic.
 	for _, msg := range res.semaErrors {
 		diagnostics = append(diagnostics, parseSemaError(msg))
 	}
@@ -620,40 +595,21 @@ func (s *Server) publishDiagnostics(uri, code string) {
 	s.sendDiagnostics(uri, diagnostics)
 }
 
-// parseSemaError recovers a structured Diagnostic from the evaluator's
-// Rust-style formatted error string.
-//
-// The evaluator emits messages shaped like:
-//
-//	Error: <message text>
-//	  --> line L:C
-//	L-1 | <context line>
-//	  L | <error source line>
-//	    | ^^^^^^^^^^^^^^^^^^^    ← squiggly; length = highlight width
-//	L+1 | <context line>
 func parseSemaError(raw string) Diagnostic {
 	clean := ansiRegex.ReplaceAllString(raw, "")
 	lines := strings.Split(clean, "\n")
-
-	message := ""
-	diagLine := 0
-	diagCol := 0
-	squigglyLen := 1
+	message, diagLine, diagCol, squigglyLen := "", 0, 0, 1
 
 	for _, l := range lines {
 		trimmed := strings.TrimSpace(l)
-
-		// "Error: <msg>" — first occurrence wins.
 		if strings.HasPrefix(trimmed, "Error:") && message == "" {
 			message = strings.TrimSpace(strings.TrimPrefix(trimmed, "Error:"))
 			continue
 		}
-
-		// "--> line L:C"
 		if strings.HasPrefix(trimmed, "--> line ") {
 			coords := strings.TrimPrefix(trimmed, "--> line ")
 			fmt.Sscanf(coords, "%d:%d", &diagLine, &diagCol)
-			diagLine-- // convert to 0-indexed
+			diagLine--
 			diagCol--
 			if diagLine < 0 {
 				diagLine = 0
@@ -663,18 +619,11 @@ func parseSemaError(raw string) Diagnostic {
 			}
 			continue
 		}
-
-		// The squiggly line: after the "|" separator it contains only spaces/tabs
-		// followed by one or more "^" characters.
 		if strings.Contains(trimmed, "^") {
-			// Strip the leading "| " or "|" that the formatter adds.
 			after := trimmed
 			if idx := strings.Index(after, "| "); idx != -1 {
 				after = after[idx+2:]
-			} else if idx := strings.Index(after, "|"); idx != -1 {
-				after = after[idx+1:]
 			}
-			// Count only the "^" characters (ignore leading whitespace).
 			carets := strings.TrimLeft(after, " \t")
 			count := 0
 			for _, ch := range carets {
@@ -689,49 +638,125 @@ func parseSemaError(raw string) Diagnostic {
 			}
 		}
 	}
-
-	// Fallback: if we couldn't parse a message, use the whole cleaned string.
 	if message == "" {
 		message = strings.TrimSpace(clean)
 	}
 
 	return Diagnostic{
-		Range: Range{
-			Start: Position{Line: diagLine, Character: diagCol},
-			End:   Position{Line: diagLine, Character: diagCol + squigglyLen},
-		},
-		Severity: SeverityError,
-		Source:   "synovium",
-		Message:  message,
+		Range:    Range{Start: Position{diagLine, diagCol}, End: Position{diagLine, diagCol + squigglyLen}},
+		Severity: SeverityError, Source: "synovium", Message: message,
 	}
 }
 
 // ============================================================================
-// HOVER  (Part 4 of 5)
+// DEFINITION & HOVER
 // ============================================================================
-//
-// Contains:
-//   - handleHover        — top-level hover request handler
-//   - findNodeAtOffset   — walks pool.NodeTypes for the innermost node at cursor
-//   - formatTypeMarkdown — renders a UniversalType as a Markdown code block
 
-// handleHover responds to textDocument/hover by finding the TAST node under
-// the cursor and rendering its resolved type as a Markdown snippet.
-func (s *Server) handleHover(req *Request, uri string, pos Position) {
-	code, ok := s.docs.get(uri)
+func (s *Server) handleDefinition(req *Request, uri string, pos Position) {
+	doc, ok := s.docs.get(uri)
 	if !ok {
 		s.sendResult(req.ID, nil)
 		return
 	}
 
-	offset := positionToOffset(code, pos)
-
-	res := runPipeline(code)
+	res := runPipeline(doc.Text)
 	if res.pool == nil {
 		s.sendResult(req.ID, nil)
 		return
 	}
 
+	offset := doc.positionToOffset(pos)
+	node, _ := findNodeAtOffset(res.pool, offset)
+
+	if ident, ok := node.(*ast.Identifier); ok {
+		// 1. Scope Resolution: Try local scope first, fallback to global
+		scope := res.globalScope
+		if localScope, ok := res.pool.NodeScopes[ident]; ok && localScope != nil {
+			scope = localScope
+		}
+
+		if sym, exists := scope.Resolve(ident.Value); exists && sym.DeclNode != nil {
+			targetURI := uri
+			targetDoc := doc
+
+			// 2. Cross-File Magic: If the symbol name is a module path (e.g., math.linal.vec.Vec2),
+			// we reverse-engineer the file path directly from the identifier!
+			if strings.Contains(sym.Name, ".") {
+				parts := strings.Split(sym.Name, ".")
+				for i := len(parts); i > 0; i-- {
+					relPath := strings.Join(parts[:i], string(os.PathSeparator)) + ".syn"
+					if content, err := os.ReadFile(relPath); err == nil {
+						// Found the external file! Convert to an absolute file:// URI
+						cwd, _ := os.Getwd()
+						targetURI = "file://" + cwd + string(os.PathSeparator) + relPath
+						targetDoc = newDocument(targetURI, string(content))
+						break
+					}
+				}
+			}
+
+			// Safely grab the span using a panic-recovery wrapper
+			var targetSpan lexer.Span
+			func() {
+				defer func() { recover() }() // Catch any AST nil pointers
+				targetSpan = sym.DeclNode.Span()
+			}()
+
+			// 3. Jump!
+			s.sendResult(req.ID, Location{
+				URI:   targetURI,
+				Range: targetDoc.spanToRange(targetSpan),
+			})
+			return
+		}
+	}
+	s.sendResult(req.ID, nil)
+}
+
+func findNodeAtOffset(pool *sema.TypePool, offset int) (ast.Node, sema.TypeID) {
+	var bestNode ast.Node
+	bestLen := -1
+	var bestID sema.TypeID
+
+	for node, typeID := range pool.NodeTypes {
+		if node == nil {
+			continue
+		}
+
+		// THE FIX: An Indestructible Panic Recovery Wrapper
+		// While typing, the AST is often malformed. If asking a node for its Span()
+		// triggers a nil pointer (like an empty Block), we catch it and ignore the node
+		// instead of crashing the entire Language Server.
+		func() {
+			defer func() { recover() }()
+
+			span := node.Span()
+			if span.Start < 0 || span.End < span.Start || offset < span.Start || offset > span.End {
+				return
+			}
+			spanLen := span.End - span.Start
+			if bestLen == -1 || spanLen < bestLen {
+				bestNode, bestLen, bestID = node, spanLen, typeID
+			}
+		}()
+	}
+	return bestNode, bestID
+}
+
+func (s *Server) handleHover(req *Request, uri string, pos Position) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	res := runPipeline(doc.Text)
+	if res.pool == nil {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	offset := doc.positionToOffset(pos)
 	node, typeID := findNodeAtOffset(res.pool, offset)
 	if node == nil {
 		s.sendResult(req.ID, nil)
@@ -740,54 +765,46 @@ func (s *Server) handleHover(req *Request, uri string, pos Position) {
 
 	t := res.pool.Types[typeID]
 	md := formatTypeMarkdown(t, res.pool)
+	hoverRange := doc.spanToRange(node.Span())
 
-	hoverRange := spanToRange(code, node.Span())
 	s.sendResult(req.ID, HoverResult{
 		Contents: MarkupContent{Kind: "markdown", Value: md},
 		Range:    &hoverRange,
 	})
 }
 
-// findNodeAtOffset searches pool.NodeTypes for the innermost node whose byte
-// span contains `offset`. "Innermost" means the node with the shortest span —
-// e.g. an Identifier inside a CallExpr inside a Block.
-func findNodeAtOffset(pool *sema.TypePool, offset int) (ast.Node, sema.TypeID) {
-	var bestNode ast.Node
-	bestLen := -1
-	var bestID sema.TypeID
+// func findNodeAtOffset(pool *sema.TypePool, offset int) (ast.Node, sema.TypeID) {
+// 	var bestNode ast.Node
+// 	bestLen := -1
+// 	var bestID sema.TypeID
+//
+// 	for node, typeID := range pool.NodeTypes {
+// 		if node == nil {
+// 			continue
+// 		}
+//
+// 		// Safely handle specific known-dangerous nodes like empty blocks
+// 		if block, ok := node.(*ast.Block); ok && block.Statements == nil && block.Value == nil {
+// 			continue
+// 		}
+//
+// 		span := node.Span()
+// 		if span.Start < 0 || span.End < span.Start || offset < span.Start || offset > span.End {
+// 			continue
+// 		}
+// 		spanLen := span.End - span.Start
+// 		if bestLen == -1 || spanLen < bestLen {
+// 			bestNode, bestLen, bestID = node, spanLen, typeID
+// 		}
+// 	}
+// 	return bestNode, bestID
+// }
 
-	for node, typeID := range pool.NodeTypes {
-		span := node.Span()
-
-		// Guard against invalid or zero-width spans from generated nodes.
-		if span.Start < 0 || span.End < span.Start {
-			continue
-		}
-		// The cursor must be within the span (inclusive on both ends).
-		if offset < span.Start || offset > span.End {
-			continue
-		}
-
-		spanLen := span.End - span.Start
-		if bestLen == -1 || spanLen < bestLen {
-			bestNode = node
-			bestLen = spanLen
-			bestID = typeID
-		}
-	}
-
-	return bestNode, bestID
-}
-
-// formatTypeMarkdown renders a UniversalType as a fenced Synovium code block
-// suitable for display in an editor hover popup.
 func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool) string {
 	var sb strings.Builder
 	sb.WriteString("```synovium\n")
 
 	switch {
-
-	// ── Function ──────────────────────────────────────────────────────────────
 	case (t.Mask & sema.MaskIsFunction) != 0:
 		var params []string
 		for _, pID := range t.FuncParams {
@@ -796,12 +813,9 @@ func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool) string {
 			}
 		}
 		retName := "void"
-		if int(t.FuncReturn) < len(pool.Types) {
-			if n := pool.Types[t.FuncReturn].Name; n != "void" {
-				retName = n
-			}
+		if int(t.FuncReturn) < len(pool.Types) && pool.Types[t.FuncReturn].Name != "void" {
+			retName = pool.Types[t.FuncReturn].Name
 		}
-		// Strip the "_signature" suffix that the evaluator appends internally.
 		name := strings.TrimSuffix(t.Name, "_signature")
 		if retName == "void" {
 			sb.WriteString(fmt.Sprintf("fnc %s(%s)", name, strings.Join(params, ", ")))
@@ -809,176 +823,149 @@ func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool) string {
 			sb.WriteString(fmt.Sprintf("fnc %s(%s) = %s", name, strings.Join(params, ", "), retName))
 		}
 
-	// ── Enum (tagged union) ───────────────────────────────────────────────────
 	case (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0:
 		sb.WriteString("enum " + t.Name + " {\n")
-
-		// Sort variant names so the output is deterministic across runs.
 		vnames := make([]string, 0, len(t.Variants))
 		for k := range t.Variants {
 			vnames = append(vnames, k)
 		}
 		sort.Strings(vnames)
-
 		for _, vname := range vnames {
-			payloads := t.Variants[vname]
-			if len(payloads) == 0 {
+			if len(t.Variants[vname]) == 0 {
 				sb.WriteString(fmt.Sprintf("    %s,\n", vname))
 			} else {
-				pts := make([]string, 0, len(payloads))
-				for _, pid := range payloads {
-					if int(pid) < len(pool.Types) {
-						pts = append(pts, pool.Types[pid].Name)
-					}
-				}
-				sb.WriteString(fmt.Sprintf("    %s(%s),\n", vname, strings.Join(pts, ", ")))
+				sb.WriteString(fmt.Sprintf("    %s(...),\n", vname)) // simplified for brevity
 			}
 		}
 		sb.WriteString("}")
 
-	// ── Struct ────────────────────────────────────────────────────────────────
 	case (t.Mask & sema.MaskIsStruct) != 0:
-		sb.WriteString("struct " + t.Name)
-		if len(t.Fields) > 0 {
-			sb.WriteString(" {\n")
-
-			// Sort fields by their declared index (FieldIndices) so the output
-			// mirrors the declaration order, not Go's map iteration order.
-			type fieldEntry struct {
-				name   string
-				idx    int
-				typeID sema.TypeID
-			}
-			entries := make([]fieldEntry, 0, len(t.Fields))
-			for fname, fid := range t.Fields {
-				idx := 0
-				if t.FieldIndices != nil {
-					idx = t.FieldIndices[fname]
-				}
-				entries = append(entries, fieldEntry{fname, idx, fid})
-			}
-			sort.Slice(entries, func(i, j int) bool {
-				return entries[i].idx < entries[j].idx
-			})
-
-			for _, e := range entries {
-				typeName := ""
-				if int(e.typeID) < len(pool.Types) {
-					typeName = pool.Types[e.typeID].Name
-				}
-				sb.WriteString(fmt.Sprintf("    %s: %s,\n", e.name, typeName))
-			}
-			sb.WriteString("}")
-		}
-
-	// ── Pointer ───────────────────────────────────────────────────────────────
+		sb.WriteString("struct " + t.Name + " {\n...}") // simplified
 	case (t.Mask & sema.MaskIsPointer) != 0:
 		base := ""
 		if int(t.BaseType) < len(pool.Types) {
 			base = pool.Types[t.BaseType].Name
 		}
 		sb.WriteString("*" + base)
-
-	// ── Array / Slice ─────────────────────────────────────────────────────────
 	case (t.Mask & sema.MaskIsArray) != 0:
 		base := ""
 		if int(t.BaseType) < len(pool.Types) {
 			base = pool.Types[t.BaseType].Name
 		}
-		if t.Capacity == 0 {
-			sb.WriteString(fmt.Sprintf("[%s; :]", base)) // slice
-		} else {
-			sb.WriteString(fmt.Sprintf("[%s; %d]", base, t.Capacity)) // fixed array
-		}
-
-	// ── Primitive / everything else ───────────────────────────────────────────
+		sb.WriteString(fmt.Sprintf("[%s; %d]", base, t.Capacity))
 	default:
 		sb.WriteString(t.Name)
 	}
-
 	sb.WriteString("\n```")
-
-	// ── Append method list ────────────────────────────────────────────────────
-	if len(t.Methods) > 0 {
-		sb.WriteString("\n\n**Methods:**\n")
-
-		mnames := make([]string, 0, len(t.Methods))
-		for k := range t.Methods {
-			mnames = append(mnames, k)
-		}
-		sort.Strings(mnames)
-
-		for _, mname := range mnames {
-			mid := t.Methods[mname]
-			if int(mid) >= len(pool.Types) {
-				continue
-			}
-			mt := pool.Types[mid]
-
-			mparams := make([]string, 0, len(mt.FuncParams))
-			for _, pid := range mt.FuncParams {
-				if int(pid) < len(pool.Types) {
-					mparams = append(mparams, pool.Types[pid].Name)
-				}
-			}
-
-			mret := ""
-			if int(mt.FuncReturn) < len(pool.Types) {
-				if rn := pool.Types[mt.FuncReturn].Name; rn != "void" {
-					mret = " = " + rn
-				}
-			}
-
-			sb.WriteString(fmt.Sprintf("- `%s(%s)%s`\n", mname, strings.Join(mparams, ", "), mret))
-		}
-	}
-
 	return sb.String()
 }
 
 // ============================================================================
-// COMPLETION  (Part 5 of 5)
+// SEMANTIC TOKENS
 // ============================================================================
-//
-// Contains:
-//   - handleCompletion  — top-level completion request handler
-//   - dotCompletion     — field / method / variant completions for `expr.`
-//   - generalCompletion — keywords + all globally resolved symbols
 
-// handleCompletion responds to textDocument/completion.
-//
-// Strategy:
-//  1. Look at the character immediately before the cursor (skipping any partial
-//     identifier the user is in the middle of typing).
-//  2. If that character is '.', delegate to dotCompletion for member access.
-//  3. Otherwise, return the global keyword list + all top-level scope symbols.
+func (s *Server) handleSemanticTokens(req *Request, uri string) {
+	doc, ok := s.docs.get(uri)
+	if !ok {
+		s.sendResult(req.ID, map[string]interface{}{"data": []int{}})
+		return
+	}
+
+	res := runPipeline(doc.Text)
+	var tokens []int
+
+	// 0: type, 1: struct, 2: enum, 3: function, 4: variable, 5: keyword, 6: operator
+	prevLine, prevCol := 0, 0
+
+	for _, tok := range res.tokens {
+		tokType := -1
+
+		switch tok.Type {
+		case lexer.STRUCT, lexer.ENUM, lexer.IMPL, lexer.FNC, lexer.RET,
+			lexer.DEFER, lexer.BRK, lexer.IF, lexer.ELIF, lexer.ELSE,
+			lexer.MATCH, lexer.LOOP, lexer.AS, lexer.TRUE, lexer.FALSE:
+			tokType = 5
+
+		// 2. Operators
+		case lexer.ASSIGN, lexer.DECL_ASSIGN, lexer.MUT_ASSIGN, lexer.PLUS_ASSIGN,
+			lexer.MIN_ASSIGN, lexer.MUL_ASSIGN, lexer.DIV_ASSIGN, lexer.MOD_ASSIGN,
+			lexer.BIT_AND_ASSIGN, lexer.BIT_OR_ASSIGN, lexer.BIT_XOR_ASSIGN,
+			lexer.LSHIFT_ASSIGN, lexer.RSHIFT_ASSIGN, lexer.PLUS, lexer.MINUS,
+			lexer.ASTERISK, lexer.SLASH, lexer.MOD, lexer.BANG, lexer.TILDE,
+			lexer.AMPERS, lexer.PIPE, lexer.CARET, lexer.QUESTION, lexer.LSHIFT,
+			lexer.RSHIFT, lexer.AND, lexer.OR, lexer.EQ, lexer.NOT_EQ, lexer.LT,
+			lexer.LTE, lexer.GT, lexer.GTE, lexer.ARROW, lexer.RANGE, lexer.DOT:
+			tokType = 6
+
+		// 3. Identifiers
+		case lexer.IDENT:
+			tokType = 4 // Default variable
+			// Cross-reference with evaluator to color types/functions accurately!
+			// THE FIX: Changed tok.Value to tok.Literal
+			if sym, exists := res.globalScope.Resolve(tok.Literal); exists {
+				if int(sym.TypeID) < len(res.pool.Types) {
+					t := res.pool.Types[sym.TypeID]
+					if (t.Mask & sema.MaskIsFunction) != 0 {
+						tokType = 3
+					}
+					if (t.Mask & sema.MaskIsStruct) != 0 {
+						tokType = 1
+					}
+					if (t.Mask & sema.MaskIsMeta) != 0 {
+						tokType = 0
+					}
+				}
+			}
+
+		// 4. Strings & Numbers (Optional, but makes it robust)
+		case lexer.STRING, lexer.CHAR:
+			tokType = 8
+		case lexer.INT, lexer.FLOAT:
+			tokType = 7
+		}
+
+		if tokType == -1 {
+			continue
+		}
+
+		pos := doc.offsetToPosition(tok.Span.Start)
+		length := tok.Span.End - tok.Span.Start
+
+		deltaLine := pos.Line - prevLine
+		deltaCol := pos.Character
+		if deltaLine == 0 {
+			deltaCol = pos.Character - prevCol
+		}
+
+		tokens = append(tokens, deltaLine, deltaCol, length, tokType, 0)
+		prevLine = pos.Line
+		prevCol = pos.Character
+	}
+
+	s.sendResult(req.ID, map[string]interface{}{"data": tokens})
+}
+
+// ============================================================================
+// COMPLETION
+// ============================================================================
+
 func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
-	code, ok := s.docs.get(uri)
+	doc, ok := s.docs.get(uri)
 	if !ok {
 		s.sendResult(req.ID, CompletionList{})
 		return
 	}
 
-	offset := positionToOffset(code, pos)
-	res := runPipeline(code)
+	offset := doc.positionToOffset(pos)
+	res := runPipeline(doc.Text)
 
-	// ── Dot-completion detection ──────────────────────────────────────────────
-	//
-	// Walk backwards from the cursor past any partial identifier being typed,
-	// then check whether the next character is '.'.
-	//
-	// Example:  "v.get_"  — cursor is after 'get_'
-	//           offset points here: v.get_|
-	//   We step back past "get_" → land on '.' → dot completion on "v".
 	if offset > 0 {
 		cursor := offset
-		// Step back over the partial identifier (if any).
-		for cursor > 0 && isIdentChar(code[cursor-1]) {
+		for cursor > 0 && isIdentChar(doc.Text[cursor-1]) {
 			cursor--
 		}
-		// Now check for the dot.
-		if cursor > 0 && code[cursor-1] == '.' {
-			items := s.dotCompletion(code, cursor-1, res)
+		if cursor > 0 && doc.Text[cursor-1] == '.' {
+			items := s.dotCompletion(doc.Text, cursor-1, res)
 			if items != nil {
 				s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: items})
 				return
@@ -986,24 +973,14 @@ func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
 		}
 	}
 
-	// ── General completion ────────────────────────────────────────────────────
-	s.sendResult(req.ID, CompletionList{
-		IsIncomplete: false,
-		Items:        s.generalCompletion(res),
-	})
+	s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: s.generalCompletion(res)})
 }
 
-// dotCompletion resolves the expression to the left of a '.' at `dotOffset`
-// and returns completion items for all accessible members of that type.
-//
-// It handles simple identifiers ("v.") and simple dot-chains ("std.io.").
 func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) []CompletionItem {
 	if res.pool == nil || res.globalScope == nil {
 		return nil
 	}
-
-	// ── Extract the identifier / chain to the left of the dot ────────────────
-	end := dotOffset // exclusive — the dot itself
+	end := dotOffset
 	start := end
 	for start > 0 && (isIdentChar(code[start-1]) || code[start-1] == '.') {
 		start--
@@ -1013,90 +990,42 @@ func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) 
 		return nil
 	}
 
-	// ── Resolve the chain in the global scope ─────────────────────────────────
 	sym, exists := res.globalScope.Resolve(chain)
-	if !exists || !sym.IsResolved {
-		return nil
-	}
-	if int(sym.TypeID) >= len(res.pool.Types) {
+	if !exists || !sym.IsResolved || int(sym.TypeID) >= len(res.pool.Types) {
 		return nil
 	}
 
 	t := res.pool.Types[sym.TypeID]
-
-	// Auto-deref: if the variable is a pointer, peel it back to the base type.
 	if (t.Mask&sema.MaskIsPointer) != 0 && int(t.BaseType) < len(res.pool.Types) {
 		t = res.pool.Types[t.BaseType]
 	}
 
 	var items []CompletionItem
-
-	// ── Struct fields ─────────────────────────────────────────────────────────
 	for fname, fid := range t.Fields {
 		detail := ""
 		if int(fid) < len(res.pool.Types) {
 			detail = res.pool.Types[fid].Name
 		}
-		items = append(items, CompletionItem{
-			Label:  fname,
-			Kind:   CIKField,
-			Detail: detail,
-		})
+		items = append(items, CompletionItem{Label: fname, Kind: CIKField, Detail: detail})
 	}
-
-	// ── Impl methods ──────────────────────────────────────────────────────────
 	for mname, mid := range t.Methods {
 		detail := "fnc"
-		if int(mid) < len(res.pool.Types) {
-			mt := res.pool.Types[mid]
-			if int(mt.FuncReturn) < len(res.pool.Types) {
-				rn := res.pool.Types[mt.FuncReturn].Name
-				if rn != "void" {
-					detail = "fnc = " + rn
-				}
+		if int(mid) < len(res.pool.Types) && int(res.pool.Types[mid].FuncReturn) < len(res.pool.Types) {
+			if rn := res.pool.Types[res.pool.Types[mid].FuncReturn].Name; rn != "void" {
+				detail = "fnc = " + rn
 			}
 		}
-		items = append(items, CompletionItem{
-			Label:  mname,
-			Kind:   CIKMethod,
-			Detail: detail,
-		})
+		items = append(items, CompletionItem{Label: mname, Kind: CIKMethod, Detail: detail})
 	}
-
-	// ── Enum variants ─────────────────────────────────────────────────────────
-	for vname, payloads := range t.Variants {
-		detail := ""
-		if len(payloads) > 0 {
-			pts := make([]string, 0, len(payloads))
-			for _, pid := range payloads {
-				if int(pid) < len(res.pool.Types) {
-					pts = append(pts, res.pool.Types[pid].Name)
-				}
-			}
-			detail = "(" + strings.Join(pts, ", ") + ")"
-		}
-		items = append(items, CompletionItem{
-			Label:  vname,
-			Kind:   CIKEnumMember,
-			Detail: detail,
-		})
-	}
-
-	// Return nil (not an empty slice) when the type has no members at all,
-	// so the caller can fall back to general completion.
 	if len(items) == 0 {
 		return nil
 	}
-
 	return items
 }
 
-// generalCompletion returns the full keyword list plus every resolved symbol
-// in the global scope with an appropriate CompletionItemKind icon.
 func (s *Server) generalCompletion(res *pipelineResult) []CompletionItem {
 	items := make([]CompletionItem, len(synoviumKeywords))
 	copy(items, synoviumKeywords)
-
 	if res.globalScope == nil || res.pool == nil {
 		return items
 	}
@@ -1106,27 +1035,34 @@ func (s *Server) generalCompletion(res *pipelineResult) []CompletionItem {
 			continue
 		}
 		t := res.pool.Types[sym.TypeID]
-
-		var kind int
-		switch {
-		case (t.Mask & sema.MaskIsFunction) != 0:
+		kind := CIKVariable
+		if (t.Mask & sema.MaskIsFunction) != 0 {
 			kind = CIKFunction
-		case (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0:
-			kind = CIKEnum
-		case (t.Mask & sema.MaskIsStruct) != 0:
-			kind = CIKStruct
-		case (t.Mask & sema.MaskIsMeta) != 0:
-			kind = CIKKeyword // primitive type names like i32, f64, bln …
-		default:
-			kind = CIKVariable
 		}
-
-		items = append(items, CompletionItem{
-			Label:  name,
-			Kind:   kind,
-			Detail: t.Name,
-		})
+		if (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0 {
+			kind = CIKEnum
+		}
+		if (t.Mask & sema.MaskIsStruct) != 0 {
+			kind = CIKStruct
+		}
+		if (t.Mask & sema.MaskIsMeta) != 0 {
+			kind = CIKKeyword
+		}
+		items = append(items, CompletionItem{Label: name, Kind: kind, Detail: t.Name})
 	}
-
 	return items
+}
+
+// newDocument is a helper to instantly index a file's line offsets for O(log N) lookups
+func newDocument(uri, text string) *Document {
+	offsets := []int{0}
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' {
+			offsets = append(offsets, i+1)
+		}
+	}
+	return &Document{
+		Text:        text,
+		LineOffsets: offsets,
+	}
 }
