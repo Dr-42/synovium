@@ -16,6 +16,8 @@ fnc main() = i32 {
     // 3. It effortlessly parses the postfix `.Some` and constructs the enum.
     a: Option(i32) = Option(i32).Some(69);
 
+    bat : Option(str) = Option(str).Some("Glomus");
+
     match a {
         Some(val) -> {
             printf("It works! Unboxed %d\n", val);

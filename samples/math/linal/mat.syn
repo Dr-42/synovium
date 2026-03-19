@@ -12,6 +12,8 @@ impl Matrix {
         ret Self{ .a = self.a + other.a, .b = self.b + other.b };
     }
 
+    /// Scales the matrix by a factor
+    /// @param factor The factor to scale by
     fnc scale(self: *Self, factor: i32) {
         self.a *= factor;
         self.b *= factor;

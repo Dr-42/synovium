@@ -82,9 +82,8 @@ func (v *VariableDecl) stmtNode() {}
 
 func (v *VariableDecl) declNode() {}
 
-// ast.go - VariableDecl.Span()
 func (v *VariableDecl) Span() lexer.Span {
-	start := v.Token.Span.Start // fallback to the identifier token
+	start := v.Token.Span.Start
 	if v.Name != nil {
 		start = v.Name.Span().Start
 	}
@@ -105,7 +104,12 @@ type ExprStmt struct {
 
 func (e *ExprStmt) stmtNode() {}
 
-func (e *ExprStmt) Span() lexer.Span { return e.Value.Span() }
+func (e *ExprStmt) Span() lexer.Span {
+	if e.Value != nil {
+		return e.Value.Span()
+	}
+	return e.Token.Span
+}
 
 // ============================================================================
 // EXPRESSIONS (Pratt Parser Targets)
@@ -122,11 +126,12 @@ func (i *Identifier) Span() lexer.Span { return i.Token.Span }
 
 type IntLiteral struct {
 	Token lexer.Token // The INT token
-	Value int64       // We will parse the hex/octal strings into actual integers here
+	Value int64
 }
 
-// Tell the AST that FunctionDecl can be used as an expression (lambda/nested)
-func (f *FunctionDecl) exprNode() {}
+func (i *IntLiteral) exprNode() {}
+
+func (i *IntLiteral) Span() lexer.Span { return i.Token.Span }
 
 // FunctionType maps to: fnc(i32, *Manager) = str
 type FunctionType struct {
@@ -143,10 +148,6 @@ func (f *FunctionType) Span() lexer.Span {
 	return lexer.Span{Start: f.Token.Span.Start, End: f.EndSpan}
 }
 
-func (i *IntLiteral) exprNode() {}
-
-func (i *IntLiteral) Span() lexer.Span { return i.Token.Span }
-
 // PrefixExpr handles: "!" | "~" | "-" | "*" | "&"
 type PrefixExpr struct {
 	Token    lexer.Token // The operator token, e.g. '-'
@@ -157,7 +158,10 @@ type PrefixExpr struct {
 func (p *PrefixExpr) exprNode() {}
 
 func (p *PrefixExpr) Span() lexer.Span {
-	return lexer.Span{Start: p.Token.Span.Start, End: p.Right.Span().End}
+	if p.Right != nil {
+		return lexer.Span{Start: p.Token.Span.Start, End: p.Right.Span().End}
+	}
+	return p.Token.Span
 }
 
 // InfixExpr handles: + - * / % == != > < >= <= && ||
@@ -171,15 +175,22 @@ type InfixExpr struct {
 func (i *InfixExpr) exprNode() {}
 
 func (i *InfixExpr) Span() lexer.Span {
-	return lexer.Span{Start: i.Left.Span().Start, End: i.Right.Span().End}
+	start := i.Token.Span.Start
+	if i.Left != nil {
+		start = i.Left.Span().Start
+	}
+	end := i.Token.Span.End
+	if i.Right != nil {
+		end = i.Right.Span().End
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 // ============================================================================
 // TYPES
 // ============================================================================
 
-// Type is a specialized interface for type signatures so we can't accidentally
-// assign an Expression where a Type is expected.
+// Type is a specialized interface for type signatures.
 type Type interface {
 	Node
 	typeNode()
@@ -209,7 +220,10 @@ type PointerType struct {
 func (p *PointerType) typeNode() {}
 
 func (p *PointerType) Span() lexer.Span {
-	return lexer.Span{Start: p.Token.Span.Start, End: p.Base.Span().End}
+	if p.Base != nil {
+		return lexer.Span{Start: p.Token.Span.Start, End: p.Base.Span().End}
+	}
+	return p.Token.Span
 }
 
 // ReferenceType handles '&' references
@@ -221,7 +235,10 @@ type ReferenceType struct {
 func (r *ReferenceType) typeNode() {}
 
 func (r *ReferenceType) Span() lexer.Span {
-	return lexer.Span{Start: r.Token.Span.Start, End: r.Base.Span().End}
+	if r.Base != nil {
+		return lexer.Span{Start: r.Token.Span.Start, End: r.Base.Span().End}
+	}
+	return r.Token.Span
 }
 
 // ArrayType handles arrays [i32; 10] and slices [i32; :]
@@ -236,7 +253,11 @@ type ArrayType struct {
 func (a *ArrayType) typeNode() {}
 
 func (a *ArrayType) Span() lexer.Span {
-	return lexer.Span{Start: a.Token.Span.Start, End: a.EndSpan}
+	if a.Base != nil {
+		// We could try to include size, but it's not critical for fallback.
+		return lexer.Span{Start: a.Token.Span.Start, End: a.EndSpan}
+	}
+	return a.Token.Span
 }
 
 // ============================================================================
@@ -254,7 +275,11 @@ type CallExpr struct {
 func (c *CallExpr) exprNode() {}
 
 func (c *CallExpr) Span() lexer.Span {
-	return lexer.Span{Start: c.Function.Span().Start, End: c.EndSpan}
+	start := c.Token.Span.Start
+	if c.Function != nil {
+		start = c.Function.Span().Start
+	}
+	return lexer.Span{Start: start, End: c.EndSpan}
 }
 
 // FieldAccessExpr represents `leftExp.identifier`
@@ -267,7 +292,15 @@ type FieldAccessExpr struct {
 func (f *FieldAccessExpr) exprNode() {}
 
 func (f *FieldAccessExpr) Span() lexer.Span {
-	return lexer.Span{Start: f.Left.Span().Start, End: f.Field.Span().End}
+	start := f.Token.Span.Start
+	if f.Left != nil {
+		start = f.Left.Span().Start
+	}
+	end := f.Token.Span.End
+	if f.Field != nil {
+		end = f.Field.Span().End
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 // IndexExpr represents `leftExp[index]` or `leftExp[start...end]`
@@ -281,7 +314,11 @@ type IndexExpr struct {
 func (i *IndexExpr) exprNode() {}
 
 func (i *IndexExpr) Span() lexer.Span {
-	return lexer.Span{Start: i.Left.Span().Start, End: i.EndSpan}
+	start := i.Token.Span.Start
+	if i.Left != nil {
+		start = i.Left.Span().Start
+	}
+	return lexer.Span{Start: start, End: i.EndSpan}
 }
 
 // ============================================================================
@@ -290,7 +327,7 @@ func (i *IndexExpr) Span() lexer.Span {
 
 type FloatLiteral struct {
 	Token lexer.Token
-	Value string // Keeping as string to retain exact formatting before backend compilation
+	Value string
 }
 
 func (f *FloatLiteral) exprNode() {}
@@ -341,19 +378,17 @@ type FunctionDecl struct {
 
 func (f *FunctionDecl) declNode() {}
 
-func (f *FunctionDecl) Span() lexer.Span {
-	// Fallback to the 'fnc' token itself if everything else is missing
-	end := f.Token.Span.End
+func (f *FunctionDecl) exprNode() {}
 
+func (f *FunctionDecl) Span() lexer.Span {
+	start := f.Token.Span.Start
+	end := f.Token.Span.End
 	if f.ReturnType != nil {
 		end = f.ReturnType.Span().End
-	}
-
-	if f.Body != nil {
+	} else if f.Body != nil {
 		end = f.Body.Span().End
 	}
-
-	return lexer.Span{Start: f.Token.Span.Start, End: end}
+	return lexer.Span{Start: start, End: end}
 }
 
 type Parameter struct {
@@ -363,7 +398,10 @@ type Parameter struct {
 }
 
 func (p *Parameter) Span() lexer.Span {
-	return lexer.Span{Start: p.Token.Span.Start, End: p.Type.Span().End}
+	if p.Type != nil {
+		return lexer.Span{Start: p.Token.Span.Start, End: p.Type.Span().End}
+	}
+	return p.Token.Span
 }
 
 // StructDecl maps to: struct <identifier> { <field_decl_list>? }
@@ -379,7 +417,9 @@ func (s *StructDecl) declNode() {}
 
 func (s *StructDecl) exprNode() {}
 
-func (s *StructDecl) Span() lexer.Span { return lexer.Span{Start: s.Token.Span.Start, End: s.EndSpan} }
+func (s *StructDecl) Span() lexer.Span {
+	return lexer.Span{Start: s.Token.Span.Start, End: s.EndSpan}
+}
 
 type FieldDecl struct {
 	Token lexer.Token
@@ -388,7 +428,15 @@ type FieldDecl struct {
 }
 
 func (f *FieldDecl) Span() lexer.Span {
-	return lexer.Span{Start: f.Name.Span().Start, End: f.Type.Span().End}
+	start := f.Token.Span.Start
+	if f.Name != nil {
+		start = f.Name.Span().Start
+	}
+	end := f.Token.Span.End
+	if f.Type != nil {
+		end = f.Type.Span().End
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 // EnumDecl maps to: enum <identifier> { <variant_list>? }
@@ -404,7 +452,9 @@ func (e *EnumDecl) declNode() {}
 
 func (e *EnumDecl) exprNode() {}
 
-func (e *EnumDecl) Span() lexer.Span { return lexer.Span{Start: e.Token.Span.Start, End: e.EndSpan} }
+func (e *EnumDecl) Span() lexer.Span {
+	return lexer.Span{Start: e.Token.Span.Start, End: e.EndSpan}
+}
 
 type VariantDecl struct {
 	Token lexer.Token
@@ -413,7 +463,18 @@ type VariantDecl struct {
 }
 
 func (v *VariantDecl) Span() lexer.Span {
-	return lexer.Span{Start: v.Name.Span().Start, End: v.Types[len(v.Types)-1].Span().End}
+	start := v.Token.Span.Start
+	if v.Name != nil {
+		start = v.Name.Span().Start
+	}
+	end := v.Token.Span.End
+	if len(v.Types) > 0 {
+		last := v.Types[len(v.Types)-1]
+		if last != nil {
+			end = last.Span().End
+		}
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 // ImplDecl maps to: impl <identifier> { <function_decl>* }
@@ -428,7 +489,9 @@ func (i *ImplDecl) declNode() {}
 
 func (i *ImplDecl) stmtNode() {}
 
-func (i *ImplDecl) Span() lexer.Span { return lexer.Span{Start: i.Token.Span.Start, End: i.EndSpan} }
+func (i *ImplDecl) Span() lexer.Span {
+	return lexer.Span{Start: i.Token.Span.Start, End: i.EndSpan}
+}
 
 // ============================================================================
 // CONTROL FLOW & COMPLEX EXPRESSIONS
@@ -446,13 +509,22 @@ type IfExpr struct {
 func (i *IfExpr) exprNode() {}
 
 func (i *IfExpr) Span() lexer.Span {
-	end := i.Body.Span().End
-	if i.ElseBody != nil {
-		end = i.ElseBody.Span().End
-	} else if len(i.ElifBodies) > 0 {
-		end = i.ElifBodies[len(i.ElifBodies)-1].Span().End
+	start := i.Token.Span.Start
+	if i.Condition != nil {
+		start = i.Condition.Span().Start
 	}
-	return lexer.Span{Start: i.Token.Span.Start, End: end}
+	end := i.Token.Span.End
+	if i.Body != nil {
+		end = i.Body.Span().End
+	} else if len(i.ElifBodies) > 0 {
+		lastBody := i.ElifBodies[len(i.ElifBodies)-1]
+		if lastBody != nil {
+			end = lastBody.Span().End
+		}
+	} else if i.ElseBody != nil {
+		end = i.ElseBody.Span().End
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 type MatchExpr struct {
@@ -464,7 +536,13 @@ type MatchExpr struct {
 
 func (m *MatchExpr) exprNode() {}
 
-func (m *MatchExpr) Span() lexer.Span { return lexer.Span{Start: m.Token.Span.Start, End: m.EndSpan} }
+func (m *MatchExpr) Span() lexer.Span {
+	start := m.Token.Span.Start
+	if m.Value != nil {
+		start = m.Value.Span().Start
+	}
+	return lexer.Span{Start: start, End: m.EndSpan}
+}
 
 type MatchArm struct {
 	Token   lexer.Token
@@ -474,7 +552,10 @@ type MatchArm struct {
 }
 
 func (m *MatchArm) Span() lexer.Span {
-	return m.Body.Span()
+	if m.Body != nil {
+		return m.Body.Span()
+	}
+	return m.Token.Span
 }
 
 type LoopExpr struct {
@@ -489,10 +570,14 @@ func (l *LoopExpr) exprNode() {}
 func (l *LoopExpr) Span() lexer.Span {
 	start := l.Token.Span.Start
 	if l.Label != nil {
-		// Assuming the backtick is immediately before the identifier
-		start = l.Label.Span().Start - 1
+		// include the backtick by using token start? We'll just use label start.
+		start = l.Label.Span().Start
 	}
-	return lexer.Span{Start: start, End: l.Body.Span().End}
+	end := l.Token.Span.End
+	if l.Body != nil {
+		end = l.Body.Span().End
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 type StructInitExpr struct {
@@ -505,7 +590,11 @@ type StructInitExpr struct {
 func (s *StructInitExpr) exprNode() {}
 
 func (s *StructInitExpr) Span() lexer.Span {
-	return lexer.Span{Start: s.Token.Span.Start, End: s.EndSpan}
+	start := s.Token.Span.Start
+	if s.Name != nil {
+		start = s.Name.Span().Start
+	}
+	return lexer.Span{Start: start, End: s.EndSpan}
 }
 
 type StructInitField struct {
@@ -518,7 +607,17 @@ type StructInitField struct {
 func (c *StructInitField) exprNode() {}
 
 func (c *StructInitField) Span() lexer.Span {
-	return lexer.Span{Start: c.Name.Span().Start, End: c.Value.Span().End}
+	start := c.Token.Span.Start
+	if c.Name != nil {
+		start = c.Name.Span().Start
+	}
+	end := c.Token.Span.End
+	if c.Value != nil {
+		end = c.Value.Span().End
+	} else if c.Type != nil {
+		end = c.Type.Span().End
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 type CastExpr struct {
@@ -530,7 +629,15 @@ type CastExpr struct {
 func (c *CastExpr) exprNode() {}
 
 func (c *CastExpr) Span() lexer.Span {
-	return lexer.Span{Start: c.Left.Span().Start, End: c.Type.Span().End}
+	start := c.Token.Span.Start
+	if c.Left != nil {
+		start = c.Left.Span().Start
+	}
+	end := c.Token.Span.End
+	if c.Type != nil {
+		end = c.Type.Span().End
+	}
+	return lexer.Span{Start: start, End: end}
 }
 
 type BubbleExpr struct {
@@ -541,7 +648,10 @@ type BubbleExpr struct {
 func (b *BubbleExpr) exprNode() {}
 
 func (b *BubbleExpr) Span() lexer.Span {
-	return lexer.Span{Start: b.Left.Span().Start, End: b.Token.Span.End}
+	if b.Left != nil {
+		return lexer.Span{Start: b.Left.Span().Start, End: b.Token.Span.End}
+	}
+	return b.Token.Span
 }
 
 // ============================================================================
@@ -570,7 +680,10 @@ type DeferStmt struct {
 func (d *DeferStmt) stmtNode() {}
 
 func (d *DeferStmt) Span() lexer.Span {
-	return lexer.Span{Start: d.Token.Span.Start, End: d.Body.Span().End}
+	if d.Body != nil {
+		return lexer.Span{Start: d.Token.Span.Start, End: d.Body.Span().End}
+	}
+	return d.Token.Span
 }
 
 type BreakStmt struct {
@@ -582,13 +695,14 @@ type BreakStmt struct {
 func (b *BreakStmt) stmtNode() {}
 
 func (b *BreakStmt) Span() lexer.Span {
+	start := b.Token.Span.Start
+	end := b.Token.Span.End
 	if b.Value != nil {
-		return lexer.Span{Start: b.Token.Span.Start, End: b.Value.Span().End}
+		end = b.Value.Span().End
+	} else if b.Label != nil {
+		end = b.Label.Span().End
 	}
-	if b.Label != nil {
-		return lexer.Span{Start: b.Token.Span.Start, End: b.Label.Span().End}
-	}
-	return b.Token.Span
+	return lexer.Span{Start: start, End: end}
 }
 
 type ArrayInitExpr struct {

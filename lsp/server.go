@@ -126,7 +126,6 @@ type ParameterInformation struct {
 }
 
 const (
-	// Completion item kinds
 	CIKText          = 1
 	CIKMethod        = 2
 	CIKFunction      = 3
@@ -153,7 +152,6 @@ const (
 	CIKOperator      = 24
 	CIKTypeParameter = 25
 
-	// Symbol kinds
 	SKFile          = 1
 	SKModule        = 2
 	SKNamespace     = 3
@@ -276,7 +274,6 @@ type pipelineResult struct {
 	semaErrors  []string
 	tokens      []lexer.Token
 	nodeURIs    map[ast.Node]string
-	// For quick lookup of node at position, we can build an interval tree later
 }
 
 func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
@@ -289,9 +286,8 @@ func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
 	res.program = p.ParseSourceFile()
 	res.parseErrors = p.Errors()
 
-	for _, d := range res.program.Declarations {
-		res.nodeURIs[d] = uri
-	}
+	// THE FIX 1: Deep Map the Current File
+	walkChildren(res.program, func(n ast.Node) { res.nodeURIs[n] = uri })
 
 	l2 := lexer.New(code)
 	for {
@@ -307,9 +303,7 @@ func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
 	evaluator := sema.NewEvaluator(res.pool, code)
 	evaluator.GlobalDecls = res.program.Declarations
 
-	// JIT callback is not used in LSP (we mock it if needed, but we'll just skip)
 	evaluator.JITCallback = func(expr ast.Expr, expectedType sema.TypeID, pool *sema.TypePool, envScope *sema.Scope, globalDecls []ast.Decl) ([]byte, error) {
-		// Mock JIT: return dummy data of correct size (all zeros)
 		sizeBytes := pool.Types[expectedType].TrueSizeBits / 8
 		if sizeBytes == 0 {
 			sizeBytes = 1
@@ -351,11 +345,17 @@ func runPipeline(uri, code string, workspaceRoot string) *pipelineResult {
 					prog := p.ParseSourceFile()
 
 					absPath, _ := filepath.Abs(checkPath)
+					absPath = filepath.ToSlash(absPath)
+					if !strings.HasPrefix(absPath, "/") {
+						absPath = "/" + absPath
+					}
 					extURI := "file://" + absPath
+
+					// THE FIX 2: Deep Map External Files!
+					walkChildren(prog, func(n ast.Node) { res.nodeURIs[n] = extURI })
 
 					modulePrefix := strings.Join(parts[:i], ".")
 					for _, decl := range prog.Declarations {
-						res.nodeURIs[decl] = extURI
 						switch v := decl.(type) {
 						case *ast.StructDecl:
 							v.Name.Value = modulePrefix + "." + v.Name.Value
@@ -410,12 +410,10 @@ type workspaceSymbol struct {
 
 type symbolIndex struct {
 	mu      sync.RWMutex
-	symbols map[string][]workspaceSymbol // name -> list (multiple files)
+	symbols map[string][]workspaceSymbol
 }
 
-func newSymbolIndex() *symbolIndex {
-	return &symbolIndex{symbols: make(map[string][]workspaceSymbol)}
-}
+func newSymbolIndex() *symbolIndex { return &symbolIndex{symbols: make(map[string][]workspaceSymbol)} }
 
 func (idx *symbolIndex) add(sym workspaceSymbol) {
 	idx.mu.Lock()
@@ -427,7 +425,6 @@ func (idx *symbolIndex) search(query string) []workspaceSymbol {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	var results []workspaceSymbol
-	// simple prefix matching (could be improved)
 	for name, list := range idx.symbols {
 		if strings.Contains(name, query) {
 			results = append(results, list...)
@@ -446,7 +443,6 @@ type Server struct {
 	logger        *log.Logger
 	workspaceRoot string
 	symbols       *symbolIndex
-	// For signature help, we need to know the call context
 }
 
 func Start() {
@@ -508,7 +504,7 @@ func (s *Server) dispatch(req *Request) {
 		json.Unmarshal(req.Params, &p)
 		if p.RootUri != "" {
 			s.workspaceRoot = strings.TrimPrefix(p.RootUri, "file://")
-			go s.indexWorkspace() // async indexing
+			go s.indexWorkspace()
 		}
 		s.handleInitialize(req)
 	case "initialized", "shutdown":
@@ -678,20 +674,6 @@ func (s *Server) updatePipelineAndDiagnostics(uri string, doc *Document) {
 	s.publishDiagnostics(uri, res)
 }
 
-func (s *Server) getPipeline(uri string) *pipelineResult {
-	doc, ok := s.docs.get(uri)
-	if !ok {
-		return nil
-	}
-	res := doc.getResult()
-	if res == nil {
-		// fallback: run pipeline synchronously
-		res = runPipeline(uri, doc.Text, s.workspaceRoot)
-		doc.setResult(res)
-	}
-	return res
-}
-
 func (s *Server) publishDiagnostics(uri string, res *pipelineResult) {
 	diagnostics := make([]Diagnostic, 0)
 	for _, msg := range res.parseErrors {
@@ -770,83 +752,43 @@ func (s *Server) indexWorkspace() {
 	if s.workspaceRoot == "" {
 		return
 	}
-	s.logger.Println("Indexing workspace at", s.workspaceRoot)
-	err := filepath.Walk(s.workspaceRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	filepath.Walk(s.workspaceRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".syn") {
 			return nil
 		}
-		if !strings.HasSuffix(path, ".syn") {
-			return nil
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		uri := "file://" + path
-		res := runPipeline(uri, string(content), s.workspaceRoot)
-		doc := newDocument(uri, string(content))
-		doc.setResult(res) // cache it
-		s.docs.set(uri, string(content))
-		// extract symbols
-		for _, decl := range res.sortedDecls {
-			sym := s.declToSymbol(decl, uri, doc)
-			if sym != nil {
-				s.symbols.add(*sym)
+		if content, err := os.ReadFile(path); err == nil {
+			uri := "file://" + path
+			res := runPipeline(uri, string(content), s.workspaceRoot)
+			doc := newDocument(uri, string(content))
+			doc.setResult(res)
+			s.docs.set(uri, string(content))
+			for _, decl := range res.sortedDecls {
+				if sym := s.declToSymbol(decl, uri, doc); sym != nil {
+					s.symbols.add(*sym)
+				}
 			}
 		}
 		return nil
 	})
-	if err != nil {
-		s.logger.Println("Workspace indexing error:", err)
-	}
 }
 
 func (s *Server) declToSymbol(decl ast.Decl, uri string, doc *Document) *workspaceSymbol {
 	switch v := decl.(type) {
 	case *ast.FunctionDecl:
 		if v.Name != nil {
-			return &workspaceSymbol{
-				name:       v.Name.Value,
-				kind:       SKFunction,
-				uri:        uri,
-				rangeStart: doc.offsetToPosition(v.Span().Start),
-				rangeEnd:   doc.offsetToPosition(v.Span().End),
-				detail:     "fnc " + v.Name.Value,
-			}
+			return &workspaceSymbol{name: v.Name.Value, kind: SKFunction, uri: uri, rangeStart: doc.offsetToPosition(v.Span().Start), rangeEnd: doc.offsetToPosition(v.Span().End), detail: "fnc " + v.Name.Value}
 		}
 	case *ast.StructDecl:
 		if v.Name != nil {
-			return &workspaceSymbol{
-				name:       v.Name.Value,
-				kind:       SKStruct,
-				uri:        uri,
-				rangeStart: doc.offsetToPosition(v.Span().Start),
-				rangeEnd:   doc.offsetToPosition(v.Span().End),
-				detail:     "struct " + v.Name.Value,
-			}
+			return &workspaceSymbol{name: v.Name.Value, kind: SKStruct, uri: uri, rangeStart: doc.offsetToPosition(v.Span().Start), rangeEnd: doc.offsetToPosition(v.Span().End), detail: "struct " + v.Name.Value}
 		}
 	case *ast.EnumDecl:
 		if v.Name != nil {
-			return &workspaceSymbol{
-				name:       v.Name.Value,
-				kind:       SKEnum,
-				uri:        uri,
-				rangeStart: doc.offsetToPosition(v.Span().Start),
-				rangeEnd:   doc.offsetToPosition(v.Span().End),
-				detail:     "enum " + v.Name.Value,
-			}
+			return &workspaceSymbol{name: v.Name.Value, kind: SKEnum, uri: uri, rangeStart: doc.offsetToPosition(v.Span().Start), rangeEnd: doc.offsetToPosition(v.Span().End), detail: "enum " + v.Name.Value}
 		}
 	case *ast.VariableDecl:
 		if v.Name != nil {
-			// compute span safely (already fixed in ast.Span())
-			return &workspaceSymbol{
-				name:       v.Name.Value,
-				kind:       SKVariable,
-				uri:        uri,
-				rangeStart: doc.offsetToPosition(v.Span().Start),
-				rangeEnd:   doc.offsetToPosition(v.Span().End),
-				detail:     "var " + v.Name.Value,
-			}
+			return &workspaceSymbol{name: v.Name.Value, kind: SKVariable, uri: uri, rangeStart: doc.offsetToPosition(v.Span().Start), rangeEnd: doc.offsetToPosition(v.Span().End), detail: "var " + v.Name.Value}
 		}
 	}
 	return nil
@@ -879,18 +821,7 @@ func (s *Server) handleHover(req *Request, uri string, pos Position) {
 		return
 	}
 
-	bestScope := res.globalScope
-	bestScopeLen := -1
-	for n, sc := range res.pool.NodeScopes {
-		span := n.Span()
-		if span.Start <= offset && offset <= span.End {
-			if l := span.End - span.Start; bestScopeLen == -1 || l < bestScopeLen {
-				bestScope = sc
-				bestScopeLen = l
-			}
-		}
-	}
-
+	bestScope := s.findBestScopeAtOffset(res, offset)
 	var typeID sema.TypeID
 	var hoverNode ast.Node
 
@@ -926,24 +857,19 @@ func (s *Server) handleHover(req *Request, uri string, pos Position) {
 	if int(typeID) > 0 && int(typeID) < len(res.pool.Types) {
 		t := res.pool.Types[typeID]
 		md := formatTypeMarkdown(t, res.pool, hoverNode)
-
 		targetNode := node
 		if faNode != nil {
 			targetNode = faNode
 		}
 		hoverRange := doc.spanToRange(targetNode.Span())
-
 		s.sendResult(req.ID, HoverResult{Contents: MarkupContent{Kind: "markdown", Value: md}, Range: &hoverRange})
 		return
 	}
 	s.sendResult(req.ID, nil)
 }
 
-// formatTypeMarkdown enhanced to show doc comments if present
 func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool, node ast.Node) string {
 	var sb strings.Builder
-	// Add doc comment if node has Doc field (not implemented in AST yet)
-	// For now, just show type info
 	sb.WriteString("```synovium\n")
 
 	switch {
@@ -951,7 +877,6 @@ func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool, node ast.Node
 		var params []string
 		for i, pID := range t.FuncParams {
 			if int(pID) < len(pool.Types) {
-				// If we have parameter names from the executable node, use them
 				if fn, ok := t.Executable.(*ast.FunctionDecl); ok && i < len(fn.Parameters) {
 					params = append(params, fn.Parameters[i].Name.Value+": "+pool.Types[pID].Name)
 				} else {
@@ -993,9 +918,6 @@ func formatTypeMarkdown(t sema.UniversalType, pool *sema.TypePool, node ast.Node
 		sb.WriteString("struct " + t.Name + " {\n")
 		if len(t.FieldLayout) > 0 {
 			for _, fID := range t.FieldLayout {
-				// need field name; we don't have mapping from typeID to field name easily
-				// we could store field names in the type, but they are in Fields map
-				// let's iterate Fields to get names
 				for name, id := range t.Fields {
 					if id == fID {
 						sb.WriteString(fmt.Sprintf("    %s: %s,\n", name, pool.Types[id].Name))
@@ -1050,36 +972,103 @@ func (s *Server) handleDefinition(req *Request, uri string, pos Position) {
 	}
 
 	offset := doc.positionToOffset(pos)
-	node, faNode := findNodesAtOffset(res.program, offset)
 
-	bestScope := res.globalScope
-	bestScopeLen := -1
-	for n, sc := range res.pool.NodeScopes {
-		span := n.Span()
-		if span.Start <= offset && offset <= span.End {
-			if l := span.End - span.Start; bestScopeLen == -1 || l < bestScopeLen {
-				bestScope = sc
-				bestScopeLen = l
+	// We need a specialized crawler for Go-To Definition that grabs the immediate parent context too
+	var tightest ast.Node
+	var parent ast.Node
+	var tightestFA *ast.FieldAccessExpr
+	minSize := -1
+
+	walkChildrenWithParent(res.program, nil, func(n ast.Node, p ast.Node) {
+		func() {
+			defer func() { recover() }()
+			span := n.Span()
+			if span.Start <= offset && offset <= span.End {
+				size := span.End - span.Start
+				if minSize == -1 || size < minSize {
+					minSize = size
+					tightest = n
+					parent = p
+				}
+				if fa, ok := n.(*ast.FieldAccessExpr); ok {
+					tightestFA = fa
+				}
+			}
+		}()
+	})
+
+	if tightest == nil {
+		s.sendResult(req.ID, nil)
+		return
+	}
+
+	bestScope := s.findBestScopeAtOffset(res, offset)
+	var targetNode ast.Node
+
+	// 1. Operator Overload Jump (e.g., `m1 + m2`)
+	if infix, ok := tightest.(*ast.InfixExpr); ok {
+		leftTypeID := sema.TypeID(0)
+		if id, exists := res.pool.NodeTypes[infix.Left]; exists {
+			leftTypeID = id
+		}
+		if int(leftTypeID) > 0 && int(leftTypeID) < len(res.pool.Types) {
+			t := res.pool.Types[leftTypeID]
+			if (t.Mask & sema.MaskIsPointer) != 0 {
+				t = res.pool.Types[t.BaseType]
+			}
+			if mid, exists := t.Methods[infix.Operator]; exists && int(mid) < len(res.pool.Types) {
+				targetNode = res.pool.Types[mid].Executable
 			}
 		}
 	}
 
-	var targetNode ast.Node
+	// 2. Struct Initialization Field Jump (e.g., `.a = 10`)
+	if targetNode == nil {
+		if _, isInitField := parent.(*ast.StructInitField); isInitField {
+			// Find the enclosing StructInitExpr to figure out what struct we are building
+			if structInit, ok := findEnclosing[*ast.StructInitExpr](res.program, tightest); ok {
+				if typeID, exists := res.pool.NodeTypes[structInit]; exists && int(typeID) < len(res.pool.Types) {
+					t := res.pool.Types[typeID]
+					if ident, ok := tightest.(*ast.Identifier); ok {
+						if _, hasField := t.Fields[ident.Value]; hasField {
+							targetNode = t.Executable // Jump to the struct declaration
+						}
+					}
+				}
+			}
+		}
+	}
 
-	if faNode != nil {
-		if chain, ok := BuildIdentChain(faNode); ok {
+	// 3. Field & Method Access Jump (e.g., `m1.scale()`)
+	if targetNode == nil && tightestFA != nil {
+		if chain, ok := BuildIdentChain(tightestFA); ok {
 			if sym, exists := bestScope.Resolve(chain); exists && sym.DeclNode != nil {
 				targetNode = resolveAliasNode(sym, res.pool)
 			}
 		}
+		if targetNode == nil {
+			if leftTypeID, ok := res.pool.NodeTypes[tightestFA.Left]; ok && int(leftTypeID) < len(res.pool.Types) {
+				leftType := res.pool.Types[leftTypeID]
+				if (leftType.Mask&sema.MaskIsPointer) != 0 && int(leftType.BaseType) < len(res.pool.Types) {
+					leftType = res.pool.Types[leftType.BaseType]
+				}
+				if mid, exists := leftType.Methods[tightestFA.Field.Value]; exists && int(mid) < len(res.pool.Types) {
+					targetNode = res.pool.Types[mid].Executable
+				} else if _, exists := leftType.Fields[tightestFA.Field.Value]; exists {
+					targetNode = leftType.Executable
+				}
+			}
+		}
 	}
 
+	// 4. Standard Identifier & NamedType Jump
 	if targetNode == nil {
-		if ident, ok := node.(*ast.Identifier); ok {
+		if ident, ok := tightest.(*ast.Identifier); ok {
 			if sym, exists := bestScope.Resolve(ident.Value); exists && sym.DeclNode != nil {
 				targetNode = resolveAliasNode(sym, res.pool)
 			}
-		} else if named, ok := node.(*ast.NamedType); ok {
+		} else if named, ok := tightest.(*ast.NamedType); ok { // <--- THE NAMED TYPE FIX
+			// Look up the name (e.g. "Matrix") in the scope
 			if sym, exists := bestScope.Resolve(named.Name); exists && sym.DeclNode != nil {
 				targetNode = resolveAliasNode(sym, res.pool)
 			}
@@ -1090,6 +1079,7 @@ func (s *Server) handleDefinition(req *Request, uri string, pos Position) {
 		targetURI := uri
 		targetDoc := doc
 
+		// Map to exact external file
 		if mappedURI, ok := res.nodeURIs[targetNode]; ok {
 			targetURI = mappedURI
 		}
@@ -1183,31 +1173,35 @@ func (s *Server) handleSemanticTokens(req *Request, uri string) {
 		tokType := -1
 		switch tok.Type {
 		case lexer.STRUCT, lexer.ENUM, lexer.IMPL, lexer.FNC, lexer.RET, lexer.DEFER, lexer.BRK, lexer.IF, lexer.ELIF, lexer.ELSE, lexer.MATCH, lexer.LOOP, lexer.AS, lexer.TRUE, lexer.FALSE:
-			tokType = 5 // keyword
+			tokType = 5
 		case lexer.ASSIGN, lexer.DECL_ASSIGN, lexer.MUT_ASSIGN, lexer.PLUS_ASSIGN, lexer.MIN_ASSIGN, lexer.MUL_ASSIGN, lexer.DIV_ASSIGN, lexer.MOD_ASSIGN, lexer.BIT_AND_ASSIGN, lexer.BIT_OR_ASSIGN, lexer.BIT_XOR_ASSIGN, lexer.LSHIFT_ASSIGN, lexer.RSHIFT_ASSIGN, lexer.PLUS, lexer.MINUS, lexer.ASTERISK, lexer.SLASH, lexer.MOD, lexer.BANG, lexer.TILDE, lexer.AMPERS, lexer.PIPE, lexer.CARET, lexer.QUESTION, lexer.LSHIFT, lexer.RSHIFT, lexer.AND, lexer.OR, lexer.EQ, lexer.NOT_EQ, lexer.LT, lexer.LTE, lexer.GT, lexer.GTE, lexer.ARROW, lexer.RANGE, lexer.DOT:
-			tokType = 6 // operator
+			tokType = 6
 		case lexer.IDENT:
 			tokType = 4 // variable (default)
-			if res.globalScope != nil {
-				if sym, exists := res.globalScope.Resolve(tok.Literal); exists && int(sym.TypeID) < len(res.pool.Types) {
+			pos := doc.offsetToPosition(tok.Span.Start)
+			offset := doc.positionToOffset(pos)
+			bestScope := s.findBestScopeAtOffset(res, offset)
+
+			if bestScope != nil {
+				if sym, exists := bestScope.Resolve(tok.Literal); exists && int(sym.TypeID) < len(res.pool.Types) {
 					t := res.pool.Types[sym.TypeID]
 					if (t.Mask & sema.MaskIsFunction) != 0 {
-						tokType = 3 // function
+						tokType = 3
 					} else if (t.Mask & sema.MaskIsStruct) != 0 {
 						if len(t.Variants) > 0 {
-							tokType = 2 // enum
+							tokType = 2
 						} else {
-							tokType = 1 // struct
+							tokType = 1
 						}
 					} else if (t.Mask & sema.MaskIsMeta) != 0 {
-						tokType = 0 // type
+						tokType = 0
 					}
 				}
 			}
 		case lexer.STRING, lexer.CHAR:
-			tokType = 8 // string
+			tokType = 8
 		case lexer.INT, lexer.FLOAT:
-			tokType = 7 // number
+			tokType = 7
 		}
 
 		if tokType == -1 {
@@ -1247,32 +1241,28 @@ func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
 		doc.setResult(res)
 	}
 
-	// Check for dot completion
+	bestScope := s.findBestScopeAtOffset(res, offset)
+
 	if offset > 0 {
 		cursor := offset
 		for cursor > 0 && isIdentChar(doc.Text[cursor-1]) {
 			cursor--
 		}
 		if cursor > 0 && doc.Text[cursor-1] == '.' {
-			if items := s.dotCompletion(doc.Text, cursor-1, res); items != nil {
+			if items := s.dotCompletion(doc.Text, cursor-1, res, bestScope); items != nil {
 				s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: items})
 				return
 			}
 		}
 	}
 
-	// Check for context-sensitive completion (e.g., after 'match')
-	// We can try to find the innermost node at cursor and infer context
 	nodeAtCursor, _ := findNodesAtOffset(res.program, offset)
 	if nodeAtCursor != nil {
-		// Simple heuristic: if we are inside a match arm pattern, suggest enum variants
 		if match, ok := findEnclosing[*ast.MatchExpr](res.program, nodeAtCursor); ok {
-			// we are inside a match expression; suggest variants of the matched value's type
 			if match.Value != nil {
 				if typeID, exists := res.pool.NodeTypes[match.Value]; exists {
 					t := res.pool.Types[typeID]
 					if len(t.Variants) > 0 {
-						// suggest variants
 						items := make([]CompletionItem, 0, len(t.Variants))
 						for vname := range t.Variants {
 							items = append(items, CompletionItem{Label: vname, Kind: CIKEnumMember, Detail: "enum variant"})
@@ -1285,48 +1275,17 @@ func (s *Server) handleCompletion(req *Request, uri string, pos Position) {
 		}
 	}
 
-	// Default: keywords + scope symbols
 	items := make([]CompletionItem, len(synoviumKeywords))
 	copy(items, synoviumKeywords)
-	if res.globalScope != nil && res.pool != nil {
-		for name, sym := range res.globalScope.Symbols {
-			if !sym.IsResolved || int(sym.TypeID) >= len(res.pool.Types) {
-				continue
-			}
-			t := res.pool.Types[sym.TypeID]
-			kind := CIKVariable
-			detail := t.Name
-			if (t.Mask & sema.MaskIsFunction) != 0 {
-				kind = CIKFunction
-				// format function signature
-				var params []string
-				for i, p := range t.FuncParams {
-					if fn, ok := t.Executable.(*ast.FunctionDecl); ok && i < len(fn.Parameters) {
-						params = append(params, fn.Parameters[i].Name.Value+": "+res.pool.Types[p].Name)
-					} else {
-						params = append(params, res.pool.Types[p].Name)
-					}
-				}
-				retName := "void"
-				if int(t.FuncReturn) < len(res.pool.Types) {
-					retName = res.pool.Types[t.FuncReturn].Name
-				}
-				detail = fmt.Sprintf("fnc %s(%s) = %s", name, strings.Join(params, ", "), retName)
-			} else if (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0 {
-				kind = CIKEnum
-			} else if (t.Mask & sema.MaskIsStruct) != 0 {
-				kind = CIKStruct
-			} else if (t.Mask & sema.MaskIsMeta) != 0 {
-				kind = CIKKeyword
-			}
-			items = append(items, CompletionItem{Label: name, Kind: kind, Detail: detail})
-		}
+	for _, item := range collectScopeSymbols(bestScope, res.pool) {
+		items = append(items, item)
 	}
+
 	s.sendResult(req.ID, CompletionList{IsIncomplete: false, Items: items})
 }
 
-func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) []CompletionItem {
-	if res.pool == nil || res.globalScope == nil {
+func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult, scope *sema.Scope) []CompletionItem {
+	if res.pool == nil || scope == nil {
 		return nil
 	}
 	end := dotOffset
@@ -1339,7 +1298,7 @@ func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) 
 		return nil
 	}
 
-	sym, exists := res.globalScope.Resolve(chain)
+	sym, exists := scope.Resolve(chain)
 	if !exists || !sym.IsResolved || int(sym.TypeID) >= len(res.pool.Types) {
 		return nil
 	}
@@ -1350,7 +1309,6 @@ func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) 
 	}
 
 	var items []CompletionItem
-	// Fields
 	for fname, fid := range t.Fields {
 		detail := ""
 		if int(fid) < len(res.pool.Types) {
@@ -1358,7 +1316,6 @@ func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) 
 		}
 		items = append(items, CompletionItem{Label: fname, Kind: CIKField, Detail: detail})
 	}
-	// Methods
 	for mname, mid := range t.Methods {
 		detail := "fnc"
 		if int(mid) < len(res.pool.Types) {
@@ -1371,7 +1328,6 @@ func (s *Server) dotCompletion(code string, dotOffset int, res *pipelineResult) 
 		}
 		items = append(items, CompletionItem{Label: mname, Kind: CIKMethod, Detail: detail})
 	}
-	// Enum variants (static)
 	if len(t.Variants) > 0 {
 		for vname := range t.Variants {
 			items = append(items, CompletionItem{Label: vname, Kind: CIKEnumMember, Detail: "enum variant"})
@@ -1422,59 +1378,27 @@ func (s *Server) handleDocumentSymbol(req *Request, uri string) {
 		switch v := decl.(type) {
 		case *ast.FunctionDecl:
 			if v.Name != nil {
-				symbols = append(symbols, DocumentSymbol{
-					Name:           v.Name.Value,
-					Kind:           SKFunction,
-					Range:          doc.spanToRange(v.Span()),
-					SelectionRange: doc.spanToRange(v.Name.Span()),
-				})
+				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKFunction, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
 			}
 		case *ast.StructDecl:
 			if v.Name != nil {
-				sym := DocumentSymbol{
-					Name:           v.Name.Value,
-					Kind:           SKStruct,
-					Range:          doc.spanToRange(v.Span()),
-					SelectionRange: doc.spanToRange(v.Name.Span()),
-				}
-				// add fields as children
+				sym := DocumentSymbol{Name: v.Name.Value, Kind: SKStruct, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())}
 				for _, f := range v.Fields {
-					sym.Children = append(sym.Children, DocumentSymbol{
-						Name:           f.Name.Value,
-						Kind:           SKField,
-						Range:          doc.spanToRange(f.Span()),
-						SelectionRange: doc.spanToRange(f.Name.Span()),
-					})
+					sym.Children = append(sym.Children, DocumentSymbol{Name: f.Name.Value, Kind: SKField, Range: doc.spanToRange(f.Span()), SelectionRange: doc.spanToRange(f.Name.Span())})
 				}
 				symbols = append(symbols, sym)
 			}
 		case *ast.EnumDecl:
 			if v.Name != nil {
-				sym := DocumentSymbol{
-					Name:           v.Name.Value,
-					Kind:           SKEnum,
-					Range:          doc.spanToRange(v.Span()),
-					SelectionRange: doc.spanToRange(v.Name.Span()),
-				}
-				// add variants as children
+				sym := DocumentSymbol{Name: v.Name.Value, Kind: SKEnum, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())}
 				for _, variant := range v.Variants {
-					sym.Children = append(sym.Children, DocumentSymbol{
-						Name:           variant.Name.Value,
-						Kind:           SKEnumMember,
-						Range:          doc.spanToRange(variant.Span()),
-						SelectionRange: doc.spanToRange(variant.Name.Span()),
-					})
+					sym.Children = append(sym.Children, DocumentSymbol{Name: variant.Name.Value, Kind: SKEnumMember, Range: doc.spanToRange(variant.Span()), SelectionRange: doc.spanToRange(variant.Name.Span())})
 				}
 				symbols = append(symbols, sym)
 			}
 		case *ast.VariableDecl:
 			if v.Name != nil {
-				symbols = append(symbols, DocumentSymbol{
-					Name:           v.Name.Value,
-					Kind:           SKVariable,
-					Range:          doc.spanToRange(v.Span()),
-					SelectionRange: doc.spanToRange(v.Name.Span()),
-				})
+				symbols = append(symbols, DocumentSymbol{Name: v.Name.Value, Kind: SKVariable, Range: doc.spanToRange(v.Span()), SelectionRange: doc.spanToRange(v.Name.Span())})
 			}
 		}
 	}
@@ -1489,13 +1413,7 @@ func (s *Server) handleWorkspaceSymbol(req *Request, query string) {
 	results := s.symbols.search(query)
 	locations := make([]Location, len(results))
 	for i, sym := range results {
-		locations[i] = Location{
-			URI: sym.uri,
-			Range: Range{
-				Start: sym.rangeStart,
-				End:   sym.rangeEnd,
-			},
-		}
+		locations[i] = Location{URI: sym.uri, Range: Range{Start: sym.rangeStart, End: sym.rangeEnd}}
 	}
 	s.sendResult(req.ID, locations)
 }
@@ -1522,23 +1440,16 @@ func (s *Server) handleInlayHint(req *Request, uri string) {
 
 	hints := make([]InlayHint, 0)
 	walkChildren(res.program, func(n ast.Node) {
-		if vDecl, ok := n.(*ast.VariableDecl); ok && vDecl.Operator == ":=" && vDecl.Type == nil {
+		if vDecl, ok := n.(*ast.VariableDecl); ok && vDecl.Operator == ":=" && vDecl.Type == nil && vDecl.Name != nil && vDecl.Value != nil {
 			if typeID, exists := res.pool.NodeTypes[vDecl.Value]; exists && int(typeID) < len(res.pool.Types) {
 				tName := res.pool.Types[typeID].Name
 				pos := doc.offsetToPosition(vDecl.Name.Span().End)
 				hints = append(hints, InlayHint{Position: pos, Label: ": " + tName, Kind: 1, PaddingLeft: true})
 			}
 		}
-		// Check for comptime blob to show computed value
 		if blob, ok := n.(*ast.ComptimeBlob); ok {
-			// find the variable that this blob is assigned to (parent may be VariableDecl)
-			// We need to know the context. For simplicity, we'll just show the blob's source as a hint after the expression.
-			// But inlay hints are usually placed after the variable name, not after the value.
-			// Alternatively, we could add a hint after the expression showing the computed value.
-			// We'll add a hint at the end of the blob's span with the value.
 			if typeID := sema.TypeID(blob.Type); int(typeID) < len(res.pool.Types) {
-				valStr := formatComptimeValue(blob, typeID, res.pool)
-				if valStr != "" {
+				if valStr := formatComptimeValue(blob, typeID, res.pool); valStr != "" {
 					pos := doc.offsetToPosition(blob.Span().End)
 					hints = append(hints, InlayHint{Position: pos, Label: " // = " + valStr, Kind: 2, PaddingLeft: true})
 				}
@@ -1551,7 +1462,6 @@ func (s *Server) handleInlayHint(req *Request, uri string) {
 func formatComptimeValue(blob *ast.ComptimeBlob, typeID sema.TypeID, pool *sema.TypePool) string {
 	t := pool.Types[typeID]
 	data := blob.Data
-	// Try to interpret based on type
 	switch t.Name {
 	case "i8", "u8":
 		if len(data) >= 1 {
@@ -1559,42 +1469,31 @@ func formatComptimeValue(blob *ast.ComptimeBlob, typeID sema.TypeID, pool *sema.
 		}
 	case "i16", "u16":
 		if len(data) >= 2 {
-			val := uint16(data[0]) | uint16(data[1])<<8
-			return fmt.Sprintf("%d", val)
+			return fmt.Sprintf("%d", uint16(data[0])|uint16(data[1])<<8)
 		}
 	case "i32", "u32":
 		if len(data) >= 4 {
-			val := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
-			return fmt.Sprintf("%d", val)
+			return fmt.Sprintf("%d", uint32(data[0])|uint32(data[1])<<8|uint32(data[2])<<16|uint32(data[3])<<24)
 		}
 	case "i64", "u64":
 		if len(data) >= 8 {
-			val := uint64(data[0]) | uint64(data[1])<<8 | uint64(data[2])<<16 | uint64(data[3])<<24 |
-				uint64(data[4])<<32 | uint64(data[5])<<40 | uint64(data[6])<<48 | uint64(data[7])<<56
-			return fmt.Sprintf("%d", val)
+			return fmt.Sprintf("%d", uint64(data[0])|uint64(data[1])<<8|uint64(data[2])<<16|uint64(data[3])<<24|uint64(data[4])<<32|uint64(data[5])<<40|uint64(data[6])<<48|uint64(data[7])<<56)
 		}
 	case "f32":
 		if len(data) >= 4 {
-			bits := uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
-			val := float32FromBits(bits)
-			return fmt.Sprintf("%g", val)
+			return fmt.Sprintf("%g", float32(uint32(data[0])|uint32(data[1])<<8|uint32(data[2])<<16|uint32(data[3])<<24))
 		}
 	case "f64":
 		if len(data) >= 8 {
-			bits := uint64(data[0]) | uint64(data[1])<<8 | uint64(data[2])<<16 | uint64(data[3])<<24 |
-				uint64(data[4])<<32 | uint64(data[5])<<40 | uint64(data[6])<<48 | uint64(data[7])<<56
-			val := float64FromBits(bits)
-			return fmt.Sprintf("%g", val)
+			return fmt.Sprintf("%g", float64(uint64(data[0])|uint64(data[1])<<8|uint64(data[2])<<16|uint64(data[3])<<24|uint64(data[4])<<32|uint64(data[5])<<40|uint64(data[6])<<48|uint64(data[7])<<56))
 		}
 	case "str":
-		// assume null-terminated string
 		end := 0
 		for end < len(data) && data[end] != 0 {
 			end++
 		}
 		return "\"" + string(data[:end]) + "\""
 	}
-	// fallback: hex dump
 	if len(data) <= 8 {
 		hex := make([]string, len(data))
 		for i, b := range data {
@@ -1603,25 +1502,6 @@ func formatComptimeValue(blob *ast.ComptimeBlob, typeID sema.TypeID, pool *sema.
 		return "0x" + strings.Join(hex, "")
 	}
 	return fmt.Sprintf("[%d bytes]", len(data))
-}
-
-func float32FromBits(bits uint32) float32 {
-	return float32FromBitsGo(bits) // dummy, need math.Float32frombits
-}
-
-func float64FromBits(bits uint64) float64 {
-	return float64FromBitsGo(bits)
-}
-
-// These would normally use math.Float32frombits etc., but to avoid import we can use a simple conversion.
-// In real code, you'd import "math".
-// We'll just return a placeholder.
-func float32FromBitsGo(bits uint32) float32 {
-	return float32(bits) // not correct but for demo
-}
-
-func float64FromBitsGo(bits uint64) float64 {
-	return float64(bits)
 }
 
 // ============================================================================
@@ -1662,13 +1542,10 @@ func (s *Server) handleSignatureHelp(req *Request, uri string, pos Position) {
 		return
 	}
 
-	// Build signature
 	var params []ParameterInformation
 	for i, pID := range funcType.FuncParams {
-		// If we have parameter names from the function declaration, use them
 		if fn, ok := funcType.Executable.(*ast.FunctionDecl); ok && i < len(fn.Parameters) {
-			label := fn.Parameters[i].Name.Value + ": " + res.pool.Types[pID].Name
-			params = append(params, ParameterInformation{Label: label})
+			params = append(params, ParameterInformation{Label: fn.Parameters[i].Name.Value + ": " + res.pool.Types[pID].Name})
 		} else {
 			params = append(params, ParameterInformation{Label: res.pool.Types[pID].Name})
 		}
@@ -1677,14 +1554,15 @@ func (s *Server) handleSignatureHelp(req *Request, uri string, pos Position) {
 	if int(funcType.FuncReturn) < len(res.pool.Types) {
 		retName = res.pool.Types[funcType.FuncReturn].Name
 	}
-	sigLabel := fmt.Sprintf("fnc %s(%s) = %s", callExpr.Function.(*ast.Identifier).Value, formatParamsShort(funcType.FuncParams, res.pool), retName)
-	sig := SignatureInformation{
-		Label:      sigLabel,
-		Parameters: params,
+
+	funcName := "?"
+	if id, ok := callExpr.Function.(*ast.Identifier); ok {
+		funcName = id.Value
+	} else if fa, ok := callExpr.Function.(*ast.FieldAccessExpr); ok && fa.Field != nil {
+		funcName = fa.Field.Value
 	}
 
-	// Determine active parameter based on cursor position inside argument list
-	// paramIndex is the index of the argument being edited (0-based)
+	sig := SignatureInformation{Label: fmt.Sprintf("fnc %s(%s) = %s", funcName, formatParamsShort(funcType.FuncParams, res.pool), retName), Parameters: params}
 	activeParam := paramIndex
 	if activeParam < 0 {
 		activeParam = 0
@@ -1693,11 +1571,7 @@ func (s *Server) handleSignatureHelp(req *Request, uri string, pos Position) {
 		activeParam = len(params) - 1
 	}
 
-	s.sendResult(req.ID, SignatureHelp{
-		Signatures:      []SignatureInformation{sig},
-		ActiveSignature: 0,
-		ActiveParameter: activeParam,
-	})
+	s.sendResult(req.ID, SignatureHelp{Signatures: []SignatureInformation{sig}, ActiveSignature: 0, ActiveParameter: activeParam})
 }
 
 func formatParamsShort(paramIDs []sema.TypeID, pool *sema.TypePool) string {
@@ -1709,19 +1583,78 @@ func formatParamsShort(paramIDs []sema.TypeID, pool *sema.TypePool) string {
 }
 
 // ============================================================================
-// AST UTILITIES
+// THE CRAWLER - THE MOST IMPORTANT FUNCTION IN THE LSP
 // ============================================================================
 
-func BuildIdentChain(node ast.Node) (string, bool) {
-	switch n := node.(type) {
-	case *ast.Identifier:
-		return n.Value, true
-	case *ast.FieldAccessExpr:
-		if left, ok := BuildIdentChain(n.Left); ok {
-			return left + "." + n.Field.Value, true
+func (s *Server) findBestScopeAtOffset(res *pipelineResult, offset int) *sema.Scope {
+	if res.globalScope == nil {
+		return nil
+	}
+
+	var bestScope *sema.Scope
+	minDist := int(^uint(0) >> 1)
+
+	for n, sc := range res.pool.NodeScopes {
+		if _, isBlock := n.(*ast.Block); isBlock {
+			continue
+		}
+
+		span := n.Span()
+		if span.Start <= offset {
+			dist := offset - span.End
+			if dist < 0 {
+				dist = 0
+			}
+
+			if dist < minDist {
+				minDist = dist
+				bestScope = sc
+			}
 		}
 	}
-	return "", false
+
+	if bestScope != nil {
+		return bestScope
+	}
+	return res.globalScope
+}
+
+func collectScopeSymbols(scope *sema.Scope, pool *sema.TypePool) []CompletionItem {
+	var items []CompletionItem
+	for cur := scope; cur != nil; cur = cur.Outer {
+		for name, sym := range cur.Symbols {
+			if !sym.IsResolved || int(sym.TypeID) >= len(pool.Types) {
+				continue
+			}
+			t := pool.Types[sym.TypeID]
+			kind := CIKVariable
+			detail := t.Name
+			if (t.Mask & sema.MaskIsFunction) != 0 {
+				kind = CIKFunction
+				var params []string
+				for i, p := range t.FuncParams {
+					if fn, ok := t.Executable.(*ast.FunctionDecl); ok && i < len(fn.Parameters) {
+						params = append(params, fn.Parameters[i].Name.Value+": "+pool.Types[p].Name)
+					} else {
+						params = append(params, pool.Types[p].Name)
+					}
+				}
+				retName := "void"
+				if int(t.FuncReturn) < len(pool.Types) {
+					retName = pool.Types[t.FuncReturn].Name
+				}
+				detail = fmt.Sprintf("fnc %s(%s) = %s", name, strings.Join(params, ", "), retName)
+			} else if (t.Mask&sema.MaskIsStruct) != 0 && len(t.Variants) > 0 {
+				kind = CIKEnum
+			} else if (t.Mask & sema.MaskIsStruct) != 0 {
+				kind = CIKStruct
+			} else if (t.Mask & sema.MaskIsMeta) != 0 {
+				kind = CIKKeyword
+			}
+			items = append(items, CompletionItem{Label: name, Kind: kind, Detail: detail})
+		}
+	}
+	return items
 }
 
 func findNodesAtOffset(root ast.Node, offset int) (ast.Node, *ast.FieldAccessExpr) {
@@ -1734,7 +1667,7 @@ func findNodesAtOffset(root ast.Node, offset int) (ast.Node, *ast.FieldAccessExp
 		func() {
 			defer func() { recover() }()
 			span := n.Span()
-			if span.Start <= offset && offset <= span.End {
+			if span.Start <= offset && offset <= span.End+2 {
 				size := span.End - span.Start
 				if minSize == -1 || size < minSize {
 					minSize = size
@@ -1752,7 +1685,6 @@ func findNodesAtOffset(root ast.Node, offset int) (ast.Node, *ast.FieldAccessExp
 	return tightest, tightestFA
 }
 
-// findCallAtPosition returns the innermost CallExpr containing the offset, and the index of the argument being edited.
 func findCallAtPosition(root ast.Node, offset int) (*ast.CallExpr, int) {
 	var foundCall *ast.CallExpr
 	var foundArgIndex int
@@ -1761,8 +1693,6 @@ func findCallAtPosition(root ast.Node, offset int) (*ast.CallExpr, int) {
 		if call, ok := n.(*ast.CallExpr); ok {
 			span := call.Span()
 			if span.Start <= offset && offset <= span.End {
-				// Determine which argument position the cursor is in
-				// For simplicity, find the argument whose span contains the offset
 				for i, arg := range call.Arguments {
 					argSpan := arg.Span()
 					if argSpan.Start <= offset && offset <= argSpan.End {
@@ -1771,7 +1701,6 @@ func findCallAtPosition(root ast.Node, offset int) (*ast.CallExpr, int) {
 						return
 					}
 				}
-				// If not inside any argument, assume after last argument (parameter index = len(args))
 				foundCall = call
 				foundArgIndex = len(call.Arguments)
 			}
@@ -1780,15 +1709,11 @@ func findCallAtPosition(root ast.Node, offset int) (*ast.CallExpr, int) {
 	return foundCall, foundArgIndex
 }
 
-// findEnclosing returns the nearest ancestor of a given type.
 func findEnclosing[T ast.Node](root ast.Node, node ast.Node) (T, bool) {
 	var result T
-	// This is a simple linear search; for production, we'd build a parent map.
-	// We'll just walk and track depth.
 	var found bool
 	walkChildrenWithParent(root, nil, func(n ast.Node, parent ast.Node) {
 		if n == node {
-			// node itself is not enclosing, we need its parent
 			if p, ok := parent.(T); ok {
 				result = p
 				found = true
@@ -2001,7 +1926,21 @@ func walkChildrenWithParent(n ast.Node, parent ast.Node, visit func(ast.Node, as
 }
 
 func walkChildren(n ast.Node, visit func(ast.Node)) {
-	walkChildrenWithParent(n, nil, func(node ast.Node, parent ast.Node) {
-		visit(node)
-	})
+	walkChildrenWithParent(n, nil, func(node ast.Node, parent ast.Node) { visit(node) })
+}
+
+// ============================================================================
+// AST UTILITIES
+// ============================================================================
+
+func BuildIdentChain(node ast.Node) (string, bool) {
+	switch n := node.(type) {
+	case *ast.Identifier:
+		return n.Value, true
+	case *ast.FieldAccessExpr:
+		if left, ok := BuildIdentChain(n.Left); ok {
+			return left + "." + n.Field.Value, true
+		}
+	}
+	return "", false
 }
